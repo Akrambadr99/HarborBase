@@ -6,7 +6,7 @@ import App from './App.tsx'
 const rootElement = document.getElementById('root')
 
 if (!rootElement) {
-  throw new Error('Flowora could not find its root element.')
+  throw new Error('HarborBase could not find its root element.')
 }
 
 createRoot(rootElement).render(

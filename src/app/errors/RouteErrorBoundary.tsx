@@ -11,7 +11,7 @@ export function RouteErrorBoundary() {
   const detail =
     error instanceof Error && import.meta.env.DEV
       ? error.message
-      : 'Flowora could not load this view. Return to the dashboard and try again.'
+      : 'HarborBase could not load this view. Return to the dashboard and try again.'
 
   return (
     <main className="error-page" role="alert">
