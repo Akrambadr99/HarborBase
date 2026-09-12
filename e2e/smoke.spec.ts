@@ -1,9 +1,15 @@
 import { expect, test } from '@playwright/test'
-
-test('SkillOrbit exposes its primary domain workflow', async ({ page }) => {
+test('SkillOrbit opens its durable operations workspace', async ({ page }) => {
   await page.goto('/')
-  await expect(page).toHaveTitle('SkillOrbit')
-  await expect(page.getByRole('heading', { level: 1, name: 'Incident Response Lead path' })).toBeVisible()
-  await page.getByRole('button', { name: 'graph' }).click()
-  await expect(page.getByRole('heading', { level: 1, name: 'Learning dependency graph' })).toBeVisible()
+  await expect(page.getByText('SkillOrbit', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  await page.getByRole('button', { name: /^Create / }).click()
+  await expect(page.getByRole('heading', { name: 'Create record' })).toBeVisible()
+  await page.getByRole('button', { name: 'Close dialog' }).click()
+  const sections = page.locator('aside > button')
+  if (await sections.count() > 1) await sections.nth(1).click()
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+  const download = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Export backup' }).click()
+  await download
 })
