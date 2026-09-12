@@ -6,3 +6,42 @@ describe('retakePlan', () => {
     it('blocks a learner who already passed', () => expect(retakePlan(entity('c', 'course', 'published'), [entity('a', 'attempt', 'passed', { course: 'c', learner: 'Maya', attempt: 1 })], 'Maya').blockers).toContain('The learner already has passing evidence.'));
     it('derives the next contiguous attempt', () => expect(retakePlan(entity('c', 'course', 'published'), [entity('a', 'attempt', 'failed', { course: 'c', learner: 'Maya', attempt: 1 })], 'Maya')).toMatchObject({ ready: true, nextAttempt: 2 }));
 });
+
+import { product } from '../../product/definition';
+import { execute, fresh } from '../../workspace/engine';
+import type { Snapshot, Value } from '../../workspace/types';
+const run = (state: Snapshot, id: string, target: string, operation: string, actorId = 'actor-1', input: Record<string, Value> = {}) => execute(state, { id, entityId: target, operation, actorId, input, expectedRevision: state.revision, type: 'operate' }, product, '2026-09-12T10:00:00Z');
+const failed = () => run(run(fresh(product), 'publish', 'course-1', 'publish', 'actor-0'), 'score', 'attempt-1', 'score');
+const draft = () => run(failed(), 'retake', 'attempt-1', 'start-retake');
+describe('versioned assessment retake execution', () => {
+    it('creates an ordered retake and records passing completion without changing the original failure', () => {
+        let state = draft();
+        const original = structuredClone(state.entities.find(item => item.id === 'attempt-1'));
+        state = run(state, 'submit', 'retake-1', 'submit-retake', 'actor-1', { score: 90 });
+        expect(state.entities.find(item => item.id === 'retake-1')).toMatchObject({ status: 'passed', fields: { attempt: 2, ruleVersion: 1, score: 90 } });
+        expect(state.entities.find(item => item.id === 'attempt-1')).toEqual(original);
+        expect(state.entities.find(item => item.id === 'submit-1')).toMatchObject({ kind: 'completion', fields: { ruleVersion: 1, learner: 'Omar Saleh' } });
+        expect(() => run(state, 'again', 'attempt-1', 'start-retake')).toThrow('already passed');
+    });
+    it('blocks stale rules, then accepts an explicitly refreshed retake', () => {
+        let state = run(draft(), 'rules', 'course-1', 'revise-rules', 'actor-0', { passing: 95 });
+        const before = structuredClone(state);
+        expect(() => run(state, 'stale', 'retake-1', 'submit-retake', 'actor-1', { score: 90 })).toThrow('rules changed');
+        expect(state).toEqual(before);
+        state = run(state, 'refresh', 'retake-1', 'refresh-retake');
+        state = run(state, 'submit', 'retake-1', 'submit-retake', 'actor-1', { score: 96 });
+        expect(state.entities.find(item => item.id === 'submit-1')?.fields['ruleVersion']).toBe(2);
+    });
+    it('prevents duplicate drafts, enforces ownership and supports cancellation', () => {
+        let state = draft();
+        expect(() => run(state, 'duplicate', 'attempt-1', 'start-retake')).toThrow('pending assessment');
+        expect(() => run(state, 'wrong-role', 'retake-1', 'submit-retake', 'actor-2', { score: 99 })).toThrow('role');
+        state = run(state, 'cancel', 'retake-1', 'cancel-retake');
+        expect(run(state, 'retry', 'attempt-1', 'start-retake').entities.find(item => item.id === 'retry-1')?.fields['attempt']).toBe(2);
+    });
+    it('blocks retakes when prerequisite evidence is missing', () => {
+        const state = failed();
+        state.entities.push({ id: 'course-2', kind: 'course', title: 'Required basics', status: 'published', revision: 1, fields: { code: 'BASICS', version: 1, passing: 80 } }, { id: 'prerequisite-1', kind: 'prerequisite', title: 'Basics first', status: 'active', revision: 1, fields: { course: 'course-1', requires: 'course-2' } });
+        expect(() => run(state, 'retake', 'attempt-1', 'start-retake')).toThrow('prerequisite');
+    });
+});

@@ -35,8 +35,8 @@ const operations: Operation[] = [{ key: 'publish', label: 'Publish course', kind
             }
             entity.status = 'published';
             return 'Course rule version published after graph validation.';
-        } }, { key: 'score', label: 'Submit assessment result', kind: 'attempt', from: ['submitted'], roles: [roles[1]!], run: ({ state, entity, add }) => {
-            const course = find(state.entities, text(entity.fields, 'course'));
+        } }, { key: 'score', label: 'Submit assessment result', kind: 'attempt', from: ['submitted'], roles: [roles[1]!], run: ({ state, entity, actor, add }) => {
+            requireThat(entity.fields['learner'] === actor.name, 'Only the owning learner can submit this assessment.'); const course = find(state.entities, text(entity.fields, 'course'));
             requireThat(course.status === 'published', 'Assessment course is not published.');
             const previous = linked(state.entities, 'attempt', 'course', course.id).filter(row => row.id !== entity.id && row.fields['learner'] === entity.fields['learner']);
             requireThat(!previous.some(row => row.status === 'passed'), 'Learner already passed this assessment.');
@@ -46,7 +46,54 @@ const operations: Operation[] = [{ key: 'publish', label: 'Publish course', kind
                 add('completion', 'Completion · ' + course.title, { course: course.id, learner: text(entity.fields, 'learner'), ruleVersion: number(course.fields, 'version') }, 'verified');
             return 'Assessment scored and completion evidence updated.';
         } }, { key: 'award', label: 'Award credential', kind: 'award', from: ['pending'], roles: [roles[2]!], run: ({ state, entity }) => { const learner = text(entity.fields, 'learner'), requirements = linked(state.entities, 'requirement', 'certification', text(entity.fields, 'certification')); const completed = new Set(rows(state.entities, 'completion').filter(row => row.fields['learner'] === learner).map(row => text(row.fields, 'course'))); requireThat(requirements.length > 0 && requirements.every(row => completed.has(text(row.fields, 'course'))), 'Learner has not completed every certification requirement.'); entity.status = 'awarded'; return 'Credential awarded from versioned completion evidence.'; } }, { key: 'expire', label: 'Mark credential expired', kind: 'award', from: ['awarded'], roles: [roles[0]!], run: ({ entity, now }) => { requireThat(text(entity.fields, 'expires') < now.slice(0, 10), 'Credential is still current.'); entity.status = 'expired'; return 'Credential marked expired; historical award retained.'; } }];
-const seed = [entity('course-1', 'course', 'Secure cloud foundations', 'draft', { code: 'SCF-101', version: 1, passing: 80 }), entity('cert-1', 'certification', 'Cloud operations certification', 'published', { code: 'COC-1', validDays: 365, minimumScore: 80 }), entity('req-1', 'requirement', 'Cloud foundation requirement', 'active', { certification: 'cert-1', course: 'course-1' }), entity('attempt-1', 'attempt', 'Maya · SCF attempt 1', 'submitted', { course: 'course-1', learner: 'Maya Hassan', score: 88, attempt: 1 })];
+const seed = [entity('course-1', 'course', 'Secure cloud foundations', 'draft', { code: 'SCF-101', version: 1, passing: 80 }), entity('cert-1', 'certification', 'Cloud operations certification', 'published', { code: 'COC-1', validDays: 365, minimumScore: 80 }), entity('req-1', 'requirement', 'Cloud foundation requirement', 'active', { certification: 'cert-1', course: 'course-1' }), entity('attempt-1', 'attempt', 'Omar · SCF attempt 1', 'submitted', { course: 'course-1', learner: 'Omar Saleh', score: 65, attempt: 1 })];
+const attemptKind = kinds.find(item => item.key === 'attempt')!;
+attemptKind.states.push('draft', 'cancelled');
+attemptKind.fields.push({ ...num('ruleVersion', 'Pinned rule version', 1, 1), required: false }, { ...num('passingSnapshot', 'Pinned passing score', 80, 0, 100), required: false }, { ...ref('previousAttempt', 'Previous attempt', 'attempt'), required: false }, { ...num('previousVersion', 'Previous result version', 1, 1), required: false });
+const retakeEligibility = (entities: Entity[], previous: Entity, learner: string, excludeId?: string) => {
+    const course = find(entities, text(previous.fields, 'course'), 'course');
+    requireThat(course.status === 'published', 'Assessment course is not published.');
+    requireThat(previous.fields['learner'] === learner && previous.status === 'failed', 'Retakes require the owning learner and a failed previous result.');
+    const attempts = linked(entities, 'attempt', 'course', course.id).filter(item => item.fields['learner'] === learner && item.id !== excludeId && item.status !== 'cancelled');
+    requireThat(!attempts.some(item => item.status === 'passed'), 'Learner already passed this assessment.');
+    requireThat(attempts.every(item => item.status === 'failed'), 'Finish or cancel the pending assessment before starting a retake.');
+    const ordered = [...attempts].sort((a, b) => number(a.fields, 'attempt') - number(b.fields, 'attempt'));
+    requireThat(ordered.every((item, index) => item.fields['attempt'] === index + 1) && ordered.at(-1)?.id === previous.id, 'Retake must follow the latest contiguous attempt.');
+    requireThat(ordered.length < 5, 'The five-attempt limit has been reached.');
+    const prerequisites = linked(entities, 'prerequisite', 'course', course.id);
+    requireThat(prerequisites.every(rule => rows(entities, 'completion').some(completion => completion.fields['course'] === rule.fields['requires'] && completion.fields['learner'] === learner)), 'Complete all prerequisite courses before a retake.');
+    return course;
+};
+operations.push(
+    { key: 'start-retake', label: 'Create assessment retake', kind: 'attempt', from: ['failed'], roles: [roles[1]!], run: ({ state, entity, actor, add }) => {
+        const course = retakeEligibility(state.entities, entity, actor.name);
+        add('attempt', 'Retake · ' + course.title, { course: course.id, learner: actor.name, score: 0, attempt: number(entity.fields, 'attempt') + 1, previousAttempt: entity.id, previousVersion: entity.revision, ruleVersion: number(course.fields, 'version'), passingSnapshot: number(course.fields, 'passing') }, 'draft');
+        return 'Retake draft created with ordered attempt and pinned assessment rules.';
+    } },
+    { key: 'submit-retake', label: 'Submit retake result', kind: 'attempt', from: ['draft'], roles: [roles[1]!], fields: [num('score', 'Retake score', 0, 0, 100)], run: ({ state, entity, actor, input, add }) => {
+        requireThat(entity.fields['learner'] === actor.name, 'Only the owning learner can submit this retake.');
+        const previous = find(state.entities, text(entity.fields, 'previousAttempt'), 'attempt');
+        const course = retakeEligibility(state.entities, previous, actor.name, entity.id);
+        requireThat(previous.revision === entity.fields['previousVersion'] && number(entity.fields, 'attempt') === number(previous.fields, 'attempt') + 1, 'Previous result changed. Refresh the retake before submission.');
+        requireThat(course.fields['version'] === entity.fields['ruleVersion'] && course.fields['passing'] === entity.fields['passingSnapshot'], 'Assessment rules changed. Refresh retake rules before submitting.');
+        entity.fields['score'] = number(input, 'score');
+        entity.status = number(input, 'score') >= number(entity.fields, 'passingSnapshot') ? 'passed' : 'failed';
+        if (entity.status === 'passed') add('completion', 'Completion · ' + course.title, { course: course.id, learner: actor.name, ruleVersion: number(entity.fields, 'ruleVersion') }, 'verified');
+        return 'Retake ' + entity.status + '; result and versioned completion evidence saved.';
+    } },
+    { key: 'refresh-retake', label: 'Refresh retake rules', kind: 'attempt', from: ['draft'], roles: [roles[1]!], run: ({ state, entity, actor }) => {
+        requireThat(entity.fields['learner'] === actor.name, 'Only the owning learner can refresh this retake.');
+        const previous = find(state.entities, text(entity.fields, 'previousAttempt'), 'attempt');
+        const course = retakeEligibility(state.entities, previous, actor.name, entity.id);
+        entity.fields['ruleVersion'] = number(course.fields, 'version');
+        entity.fields['passingSnapshot'] = number(course.fields, 'passing');
+        entity.fields['previousVersion'] = previous.revision;
+        entity.fields['score'] = 0;
+        return 'Retake refreshed; review the current passing score before submitting a new result.';
+    } },
+    { key: 'cancel-retake', label: 'Cancel assessment retake', kind: 'attempt', from: ['draft'], roles: [roles[1]!], run: ({ entity, actor }) => { requireThat(entity.fields['learner'] === actor.name, 'Only the owning learner can cancel this retake.'); entity.status = 'cancelled'; return 'Retake cancelled without changing previous results.'; } },
+    { key: 'revise-rules', label: 'Publish revised assessment rules', kind: 'course', from: ['published'], roles: [roles[0]!], fields: [num('passing', 'New passing score', 80, 0, 100)], run: ({ entity, input }) => { entity.fields['version'] = number(entity.fields, 'version') + 1; entity.fields['passing'] = number(input, 'passing'); return 'New assessment rule version published; historical results retained.'; } },
+);
 const validate: Product['validate'] = entities => {
     for (const rule of rows(entities, 'prerequisite'))
         requireThat(rule.fields['course'] !== rule.fields['requires'], 'A course cannot require itself.');
