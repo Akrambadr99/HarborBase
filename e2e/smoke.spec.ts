@@ -74,3 +74,4 @@ test('prior-learning evidence becomes a durable completion after two-role review
     await page.getByRole('button', { name: /^Prior learning recognition/ }).click();
     await expect(page.locator('.detail-title')).toContainText('issued');
 });
+test('versioned path enrollment requires prerequisite review and persists',async({page})=>{await page.goto('/learning-control');const role=page.getByRole('combobox',{name:'Learning role'});await page.getByRole('button',{name:'Request path enrollment'}).click();await role.selectOption('Supervisor');await page.getByRole('button',{name:'Approve path enrollment'}).click();await expect(page.getByRole('status')).toContainText('Enrollment approved');await page.reload();await expect(page.getByText('approved · version 3')).toBeVisible();await expect(page.getByRole('region',{name:'Learning control history'})).toContainText('path-enrollment-approved')});
