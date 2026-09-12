@@ -1,3 +1,4 @@
+import { recognitionKind, recognitionOperations } from '../learning-graph/recognition';
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import type { Product, Kind, Field, Operation, Entity } from '../workspace/types';
 import { entity, find, rows, total, text, number, requireThat } from '../workspace/values';
@@ -136,6 +137,8 @@ operations.push(
     }},
     {key:'cancel-recertification',label:'Cancel credential renewal',kind:'recertification',from:['requested'],roles:[roles[1]!],run:({entity,actor}) => {requireThat(actor.id === entity.fields['requestedBy'],'Only the requesting learner can cancel renewal.');entity.status='cancelled';return 'Credential renewal cancelled without issuing an award.';}},
 );
+kinds.push(recognitionKind);
+operations.push(...recognitionOperations);
 const validate: Product['validate'] = entities => {
     for (const rule of rows(entities, 'prerequisite'))
         requireThat(rule.fields['course'] !== rule.fields['requires'], 'A course cannot require itself.');

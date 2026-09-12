@@ -53,3 +53,24 @@ test('expired credential renewal pins completion evidence and issues a linked aw
  await page.reload();await page.getByRole('button',{name:/^Recertification requests/}).click();await expect(page.locator('.detail-title')).toContainText('issued');
  await expect(page.locator('.detail')).toContainText('2027-09-12');await page.getByRole('button',{name:/^Credential awards/}).click();await expect(page.locator('.list .row')).toHaveCount(2);
 });
+
+
+test('prior-learning evidence becomes a durable completion after two-role review', async ({ page }) => {
+    await page.goto('/operations');
+    const actor = page.getByRole('combobox', { name: 'Current actor' });const dialog = page.getByRole('dialog');
+    const save = async () => { await dialog.getByRole('button', { name: 'Save command', exact: true }).click();await expect(dialog).toHaveCount(0); };
+    await page.getByRole('button', { name: 'Publish course', exact: true }).click();await save();
+    await actor.selectOption('actor-1');await page.getByRole('button', { name: 'Request prior-learning recognition', exact: true }).click();
+    await dialog.getByLabel('External evidence reference', { exact: true }).fill('EXTERNAL-CERT-UI');
+    await dialog.getByLabel('External completion date', { exact: true }).fill('2026-09-01');
+    await dialog.getByLabel('Recognition evidence', { exact: true }).fill('External learning certificate covers all current course outcomes.');await save();
+    await page.getByRole('button', { name: /^Prior learning recognition/ }).click();
+    await actor.selectOption('actor-2');await page.getByRole('button', { name: 'Approve recognition evidence', exact: true }).click();
+    await dialog.getByLabel('Recognition evidence', { exact: true }).fill('Supervisor checked the certificate and matched the current outcomes.');await save();
+    await actor.selectOption('actor-0');await page.getByRole('button', { name: 'Issue recognized completion', exact: true }).click();await save();
+    await page.reload();await page.getByRole('button', { name: /^Course completions/ }).click();
+    await expect(page.locator('.list .row')).toHaveCount(1);
+    await expect(page.locator('.detail')).toContainText('Omar Saleh');
+    await page.getByRole('button', { name: /^Prior learning recognition/ }).click();
+    await expect(page.locator('.detail-title')).toContainText('issued');
+});
