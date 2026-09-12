@@ -60,3 +60,25 @@ it('rejects unauthorized or stale previous-result draft changes',()=>{
  const previous=state.entities.find(item=>item.id==='attempt-1');if(!previous)throw new Error('Missing attempt');previous.revision+=1;
  expect(()=>run(state,'stale','retake-1','save-retake-draft','actor-1',{score:99})).toThrow('Previous result changed');
 });
+
+const renewalReady = () => {
+ const state=run(draft(),'pass','retake-1','submit-retake','actor-1',{score:90});
+ state.entities.push(entity('award-old','award','expired',{certification:'cert-1',learner:'Omar Saleh',expires:'2026-09-01'}));
+ return state;
+};
+describe('versioned credential renewal',()=>{
+ it('pins current completions and issues one linked replacement award',()=>{
+  let state=run(renewalReady(),'request-renewal','award-old','request-recertification','actor-1');
+  expect(state.entities.find(item=>item.id==='request-renewal-1')).toMatchObject({status:'requested',fields:{previous:'award-old',learner:'Omar Saleh'}});
+  state=run(state,'issue-renewal','request-renewal-1','issue-recertification','actor-0');
+  expect(state.entities.find(item=>item.id==='issue-renewal-1')).toMatchObject({status:'awarded',fields:{previousAward:'award-old',expires:'2027-09-12'}});
+  expect(state.entities.find(item=>item.id==='award-old')?.status).toBe('expired');
+  expect(()=>run(state,'duplicate','award-old','request-recertification','actor-1')).toThrow('already exists');
+ });
+ it('rejects changed course rules without partially issuing a credential',()=>{
+  let state=run(renewalReady(),'request-renewal','award-old','request-recertification','actor-1');
+  state=run(state,'rules','course-1','revise-rules','actor-0',{passing:90});const before=structuredClone(state);
+  expect(()=>run(state,'stale','request-renewal-1','issue-recertification','actor-0')).toThrow('current rule version');
+  expect(state).toEqual(before);expect(state.entities.filter(item=>item.kind==='award')).toHaveLength(1);
+ });
+});

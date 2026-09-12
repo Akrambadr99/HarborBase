@@ -50,6 +50,8 @@ const seed = [entity('course-1', 'course', 'Secure cloud foundations', 'draft', 
 const attemptKind = kinds.find(item => item.key === 'attempt')!;
 attemptKind.states.push('draft', 'cancelled');
 attemptKind.fields.push({ ...num('ruleVersion', 'Pinned rule version', 1, 1), required: false }, { ...num('passingSnapshot', 'Pinned passing score', 80, 0, 100), required: false }, { ...ref('previousAttempt', 'Previous attempt', 'attempt'), required: false }, { ...num('previousVersion', 'Previous result version', 1, 1), required: false });
+const awardKind = kinds.find(item => item.key === 'award')!;
+awardKind.fields.push({...ref('previousAward','Previous credential','award'),required:false});
 const retakeEligibility = (entities: Entity[], previous: Entity, learner: string, excludeId?: string) => {
     const course = find(entities, text(previous.fields, 'course'), 'course');
     requireThat(course.status === 'published', 'Assessment course is not published.');
@@ -101,9 +103,43 @@ operations.push(
     { key: 'cancel-retake', label: 'Cancel assessment retake', kind: 'attempt', from: ['draft'], roles: [roles[1]!], run: ({ entity, actor }) => { requireThat(entity.fields['learner'] === actor.name, 'Only the owning learner can cancel this retake.'); entity.status = 'cancelled'; return 'Retake cancelled without changing previous results.'; } },
     { key: 'revise-rules', label: 'Publish revised assessment rules', kind: 'course', from: ['published'], roles: [roles[0]!], fields: [num('passing', 'New passing score', 80, 0, 100)], run: ({ entity, input }) => { entity.fields['version'] = number(entity.fields, 'version') + 1; entity.fields['passing'] = number(input, 'passing'); return 'New assessment rule version published; historical results retained.'; } },
 );
+const recertificationEvidence = (entities: Entity[], award: Entity) => {
+    const certification=find(entities,text(award.fields,'certification'),'certification');
+    requireThat(certification.status === 'published','Certification is not published.');
+    const requirements=linked(entities,'requirement','certification',certification.id);
+    const evidence=requirements.map(rule => {
+        const course=find(entities,text(rule.fields,'course'),'course');
+        requireThat(course.status === 'published','Every required course must remain published.');
+        const completion=rows(entities,'completion').find(item => item.fields['course'] === course.id && item.fields['learner'] === award.fields['learner'] && item.fields['ruleVersion'] === course.fields['version']);
+        requireThat(completion,'Complete every required course under its current rule version.');
+        return [completion.id,completion.revision,course.id,course.revision,course.fields['version']];
+    });
+    requireThat(requirements.length > 0,'Certification has no active requirements.');
+    return JSON.stringify(evidence);
+};
+kinds.push(kind('recertification','Recertification requests',['requested','issued','cancelled'],[],[ref('previous','Expired credential','award'),ref('certification','Certification','certification'),txt('learner','Learner identity'),txt('requestedBy','Requesting learner'),txt('evidence','Pinned completion evidence'),date('expires','Renewed expiry')]));
+operations.push(
+    {key:'request-recertification',label:'Request credential renewal',kind:'award',from:['expired'],roles:[roles[1]!],run:({state,entity,actor,now,add}) => {
+        requireThat(entity.fields['learner'] === actor.name,'Only the credential learner can request renewal.');
+        requireThat(!rows(state.entities,'recertification').some(item => item.fields['previous'] === entity.id && item.status !== 'cancelled'),'A renewal request already exists for this credential.');
+        const certification=find(state.entities,text(entity.fields,'certification'),'certification');
+        const expires=new Date(now);expires.setUTCDate(expires.getUTCDate()+number(certification.fields,'validDays'));
+        add('recertification','Renewal · '+entity.title,{previous:entity.id,certification:certification.id,learner:actor.name,requestedBy:actor.id,evidence:recertificationEvidence(state.entities,entity),expires:expires.toISOString().slice(0,10)});
+        return 'Credential renewal requested with current version completion evidence.';
+    }},
+    {key:'issue-recertification',label:'Issue renewed credential',kind:'recertification',from:['requested'],roles:[roles[0]!],run:({state,entity,actor,add}) => {
+        requireThat(actor.id !== entity.fields['requestedBy'],'Renewal requires independent administrator approval.');
+        const previous=find(state.entities,text(entity.fields,'previous'),'award');
+        requireThat(previous.status === 'expired' && recertificationEvidence(state.entities,previous) === entity.fields['evidence'],'Completion evidence or course rules changed. Submit a fresh renewal request.');
+        add('award','Renewed · '+previous.title,{certification:text(entity.fields,'certification'),learner:text(entity.fields,'learner'),expires:text(entity.fields,'expires'),previousAward:previous.id},'awarded');
+        entity.status='issued';return 'Renewed credential issued; expired award and pinned evidence retained.';
+    }},
+    {key:'cancel-recertification',label:'Cancel credential renewal',kind:'recertification',from:['requested'],roles:[roles[1]!],run:({entity,actor}) => {requireThat(actor.id === entity.fields['requestedBy'],'Only the requesting learner can cancel renewal.');entity.status='cancelled';return 'Credential renewal cancelled without issuing an award.';}},
+);
 const validate: Product['validate'] = entities => {
     for (const rule of rows(entities, 'prerequisite'))
         requireThat(rule.fields['course'] !== rule.fields['requires'], 'A course cannot require itself.');
+    for (const request of rows(entities,'recertification').filter(item => item.status === 'issued')) requireThat(rows(entities,'award').some(item => item.fields['previousAward'] === request.fields['previous'] && item.status === 'awarded'),'Issued recertification requires a renewed credential.');
 };
 const metrics: Product['metrics'] = entities => [{ label: 'Published courses', value: String(rows(entities, 'course').filter(row => row.status === 'published').length) }, { label: 'Verified completions', value: String(rows(entities, 'completion').length) }, { label: 'Current awards', value: String(rows(entities, 'award').filter(row => row.status === 'awarded').length) }];
 export const product: Product = { name: 'SkillOrbit', description: 'Versioned learning rules, assessments and credential eligibility', accent: '#4338ca', actors: roles.map((role, index) => ({ id: 'actor-' + String(index), name: ['Maya Hassan', 'Omar Saleh', 'Lina Farouk', 'Nadia Ali'][index] ?? role, role })), kinds, operations, seed, validate, metrics };

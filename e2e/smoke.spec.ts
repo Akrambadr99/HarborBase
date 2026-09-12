@@ -36,3 +36,20 @@ test('retake draft survives reload and refresh clears obsolete unsent score',asy
  await panel.getByRole('button',{name:'Run: Refresh retake rules',exact:true}).click();await save();await expect(panel).toContainText('draft - saved score 0');
  await panel.getByRole('button',{name:'Run: Submit retake result',exact:true}).click();await dialog.getByLabel('Retake score',{exact:true}).fill('96');await save();await page.reload();await expect(panel).toContainText('passed - saved score 96');
 });
+
+test('expired credential renewal pins completion evidence and issues a linked award',async({page})=>{
+ await page.goto('/operations');const actor=page.getByRole('combobox',{name:'Current actor'});const dialog=page.getByRole('dialog');
+ const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
+ await page.getByRole('button',{name:/^Courses/}).click();await page.getByRole('button',{name:'Publish course',exact:true}).click();await save();
+ await actor.selectOption('actor-1');await page.getByRole('button',{name:/^Assessment attempts/}).click();await page.getByRole('button',{name:'Submit assessment result',exact:true}).click();await save();
+ await page.getByRole('button',{name:'Create assessment retake',exact:true}).click();await save();await page.getByRole('button',{name:/^Retake · Secure/}).click();
+ await page.getByRole('button',{name:'Submit retake result',exact:true}).click();await dialog.getByLabel('Retake score',{exact:true}).fill('90');await save();
+ await actor.selectOption('actor-2');await page.getByRole('button',{name:/^Credential awards/}).click();await page.getByRole('button',{name:'Create credential awards',exact:true}).click();
+ await dialog.getByLabel('Record title',{exact:true}).fill('Omar expired credential');await dialog.getByRole('combobox',{name:'Certification',exact:true}).selectOption('cert-1');
+ await dialog.getByLabel('Learner identity',{exact:true}).fill('Omar Saleh');await dialog.getByLabel('Expiry date',{exact:true}).fill('2026-09-01');await save();
+ await page.getByRole('button',{name:'Award credential',exact:true}).click();await save();await actor.selectOption('actor-0');await page.getByRole('button',{name:'Mark credential expired',exact:true}).click();await save();
+ await actor.selectOption('actor-1');await page.getByRole('button',{name:'Request credential renewal',exact:true}).click();await save();
+ await page.getByRole('button',{name:/^Recertification requests/}).click();await actor.selectOption('actor-0');await page.getByRole('button',{name:'Issue renewed credential',exact:true}).click();await save();
+ await page.reload();await page.getByRole('button',{name:/^Recertification requests/}).click();await expect(page.locator('.detail-title')).toContainText('issued');
+ await expect(page.locator('.detail')).toContainText('2027-09-12');await page.getByRole('button',{name:/^Credential awards/}).click();await expect(page.locator('.list .row')).toHaveCount(2);
+});
