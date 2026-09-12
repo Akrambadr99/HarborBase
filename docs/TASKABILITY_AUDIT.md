@@ -17,3 +17,9 @@ Prerequisite planning combines two selections and transitive graph rules. Eligib
 **Too Hard (3):** 28 replace the learning graph; 29 migrate all course versions; 30 build a content-authoring suite.
 
 Strong count: **18**, based on graph, version, ownership, and time rules with visible outcomes.
+
+## Depth expansion directions 31–40
+
+31. **Strong candidate · Medium-Hard:** credential eligibility combines requirements, learner evidence, and expiry. 32. **Strong candidate · Medium:** award switching recomputes evidence counts. 33. **Strong candidate · Medium-Hard:** course-version change invalidates older completion evidence. 34. **Strong candidate · Medium:** duplicate completions do not inflate requirement count. 35. **Strong candidate · Medium-Hard:** late requirement addition revokes pending eligibility. 36. **Strong candidate · Medium:** missing expiry remains separate from evidence failure. 37. **Strong candidate · Medium-Hard:** recertification preserves prior immutable award evidence. 38. **Strong candidate · Medium:** an empty requirement set cannot award a credential. 39. **Too Easy:** rename Eligible. 40. **Too Hard:** synchronize awards with multiple live LMS systems.
+
+Expanded strong count: **26**.
