@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components, @typescript-eslint/no-confusing-void-expression */
+import { product } from '../../product/definition';
 import { useState } from 'react';
 import type { Entity, Snapshot } from '../../workspace/types';
 const numeric = (item: Entity, key: string) => { const value = item.fields[key]; return typeof value === 'number' ? value : 0; };
@@ -20,10 +21,13 @@ export function retakePlan(course: Entity | undefined, entities: Entity[], learn
         blockers.push('Existing attempt evidence has a sequence gap.');
     return { ready: blockers.length === 0, blockers, nextAttempt: attempts.length + 1 };
 }
-export function DomainLifecyclePanel({ snapshot }: { snapshot: Snapshot }) {
-    const courses = snapshot.entities.filter((item) => item.kind === 'course');
-    const [courseId, setCourseId] = useState(courses[0]?.id ?? '');
-    const [learner, setLearner] = useState('Maya Hassan');
-    const result = retakePlan(courses.find((item) => item.id === courseId), snapshot.entities, learner);
-    return <section className="sub" aria-label="Assessment retake planner"><h3>Assessment retake planner <span>{result.ready ? 'eligible' : 'blocked'}</span></h3><div className="filters"><select aria-label="Retake course" value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><input aria-label="Retake learner" value={learner} onChange={(event) => setLearner(event.target.value)}/></div><p><b>Next attempt {result.nextAttempt}</b><small>{result.ready ? 'Published rules and attempt history allow another assessment.' : result.blockers.join(' ')}</small></p></section>;
+export function DomainLifecyclePanel({snapshot,actorId,onExecute}:{snapshot:Snapshot;actorId?:string;onExecute?:(operation:string,entityId:string)=>void}) {
+ const courses=snapshot.entities.filter(item => item.kind === 'course');const [courseId,setCourseId]=useState(courses[0]?.id ?? '');
+ const actor=product.actors.find(item => item.id === actorId);const course=courses.find(item => item.id === courseId);
+ const attempts=snapshot.entities.filter(item => item.kind === 'attempt' && item.fields['course'] === courseId && (actor?.role !== 'Learner' || item.fields['learner'] === actor.name)).sort((a,b) => numeric(a,'attempt')-numeric(b,'attempt') || a.id.localeCompare(b.id));
+ return <section className="sub" aria-label="Assessment retake planner"><h3>Saved assessment attempts</h3><label>Retake course<select value={courseId} onChange={event => setCourseId(event.target.value)}>{courses.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+ {attempts.map(item => <article key={item.id}><h4>{item.title}</h4><p>Attempt {numeric(item,'attempt')} - {item.status} - saved score {numeric(item,'score')}</p>
+ {item.status === 'draft' && <p>{item.fields['ruleVersion'] === course?.fields['version'] ? 'Saved result has not been submitted.' : 'Assessment rules changed. Refresh rules to clear the old draft score before submitting a new result.'}</p>}
+ {product.operations.filter(op => ['score','start-retake','save-retake-draft','submit-retake','refresh-retake','cancel-retake'].includes(op.key) && op.from.includes(item.status) && op.roles.includes(actor?.role ?? '') && item.fields['learner'] === actor?.name).map(op => <button key={op.key} onClick={() => onExecute?.(op.key,item.id)}>Run: {op.label}</button>)}
+ </article>)}</section>;
 }

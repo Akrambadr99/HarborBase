@@ -22,3 +22,17 @@ test('retake submission recovers from revised assessment rules and persists comp
     await page.getByRole('button', { name: /^Assessment attempts/ }).click();
     await page.getByRole('button', { name: /^Omar · SCF/ }).click(); await expect(page.locator('.detail-title')).toContainText('failed');
 });
+
+
+test('retake draft survives reload and refresh clears obsolete unsent score',async({page})=>{
+ await page.goto('/operations');const actor=page.getByRole('combobox',{name:'Current actor'});const dialog=page.getByRole('dialog');const panel=page.getByRole('region',{name:'Assessment retake planner'});
+ const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
+ await page.getByRole('button',{name:'Publish course',exact:true}).click();await save();await actor.selectOption('actor-1');
+ await panel.getByRole('button',{name:'Run: Submit assessment result',exact:true}).click();await save();await panel.getByRole('button',{name:'Run: Create assessment retake',exact:true}).click();await save();
+ await panel.getByRole('button',{name:'Run: Save unfinished retake',exact:true}).click();await dialog.getByLabel('Draft retake score',{exact:true}).fill('90');await save();await page.reload();await actor.selectOption('actor-1');await expect(panel).toContainText('draft - saved score 90');
+ await panel.getByRole('button',{name:'Run: Submit retake result',exact:true}).click();await expect(dialog.getByLabel('Retake score',{exact:true})).toHaveValue('90');await page.keyboard.press('Escape');
+ await actor.selectOption('actor-0');await page.getByRole('button',{name:'Publish revised assessment rules',exact:true}).click();await dialog.getByLabel('New passing score',{exact:true}).fill('95');await save();
+ await actor.selectOption('actor-1');await expect(panel).toContainText('Assessment rules changed');await panel.getByRole('button',{name:'Run: Submit retake result',exact:true}).click();await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog.getByRole('alert')).toContainText('rules changed');await page.keyboard.press('Escape');
+ await panel.getByRole('button',{name:'Run: Refresh retake rules',exact:true}).click();await save();await expect(panel).toContainText('draft - saved score 0');
+ await panel.getByRole('button',{name:'Run: Submit retake result',exact:true}).click();await dialog.getByLabel('Retake score',{exact:true}).fill('96');await save();await page.reload();await expect(panel).toContainText('passed - saved score 96');
+});

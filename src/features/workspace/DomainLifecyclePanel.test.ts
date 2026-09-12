@@ -45,3 +45,18 @@ describe('versioned assessment retake execution', () => {
         expect(() => run(state, 'retake', 'attempt-1', 'start-retake')).toThrow('prerequisite');
     });
 });
+
+it('saves an unfinished score without completion and requires current rules for submission',()=>{
+ let state=run(draft(),'save','retake-1','save-retake-draft','actor-1',{score:90});
+ expect(state.entities.find(item=>item.id==='retake-1')).toMatchObject({status:'draft',fields:{score:90}});expect(state.entities.filter(item=>item.kind==='completion')).toHaveLength(0);
+ state=run(state,'rules','course-1','revise-rules','actor-0',{passing:95});
+ expect(()=>run(state,'submit','retake-1','submit-retake','actor-1',{score:90})).toThrow('rules changed');
+ state=run(state,'refresh','retake-1','refresh-retake');expect(state.entities.find(item=>item.id==='retake-1')?.fields['score']).toBe(0);
+ state=run(state,'save-new','retake-1','save-retake-draft','actor-1',{score:96});state=run(state,'submit-new','retake-1','submit-retake','actor-1',{score:96});
+ expect(state.entities.filter(item=>item.kind==='completion')).toHaveLength(1);
+});
+it('rejects unauthorized or stale previous-result draft changes',()=>{
+ const state=draft();expect(()=>run(state,'wrong','retake-1','save-retake-draft','actor-0',{score:99})).toThrow('role');
+ const previous=state.entities.find(item=>item.id==='attempt-1');if(!previous)throw new Error('Missing attempt');previous.revision+=1;
+ expect(()=>run(state,'stale','retake-1','save-retake-draft','actor-1',{score:99})).toThrow('Previous result changed');
+});

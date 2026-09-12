@@ -65,6 +65,13 @@ const retakeEligibility = (entities: Entity[], previous: Entity, learner: string
     return course;
 };
 operations.push(
+    {key:'save-retake-draft',label:'Save unfinished retake',kind:'attempt',from:['draft'],roles:[roles[1]!],fields:[num('score','Draft retake score',0,0,100)],run:({state,entity,actor,input}) => {
+        requireThat(entity.fields['learner'] === actor.name,'Only the owning learner can save this retake draft.');
+        const previous=find(state.entities,text(entity.fields,'previousAttempt'),'attempt');
+        retakeEligibility(state.entities,previous,actor.name,entity.id);
+        requireThat(previous.revision === entity.fields['previousVersion'],'Previous result changed. Refresh the retake before saving.');
+        entity.fields['score']=number(input,'score');return 'Unfinished retake saved without submitting a result or issuing completion evidence.';
+    }},
     { key: 'start-retake', label: 'Create assessment retake', kind: 'attempt', from: ['failed'], roles: [roles[1]!], run: ({ state, entity, actor, add }) => {
         const course = retakeEligibility(state.entities, entity, actor.name);
         add('attempt', 'Retake · ' + course.title, { course: course.id, learner: actor.name, score: 0, attempt: number(entity.fields, 'attempt') + 1, previousAttempt: entity.id, previousVersion: entity.revision, ruleVersion: number(course.fields, 'version'), passingSnapshot: number(course.fields, 'passing') }, 'draft');
