@@ -1,0 +1,7 @@
+import { describe, expect, it } from 'vitest';
+import { product } from '../../product/definition';
+import { fresh } from '../../workspace/engine';
+import { analyzeCertification } from './analytics';
+import { canEditCertification, certificationStates } from './policy';
+import { countCertificationByState, searchCertification, selectCertification } from './selectors';
+describe('certification domain module', () => { const records = fresh(product).entities; it('selects only certification records', () => expect(selectCertification(records).every(record => record.kind === 'certification')).toBe(true)); it('searches deterministic fields', () => { const first = selectCertification(records)[0]; expect(first ? searchCertification(records, first.title).map(row => row.id) : []).toEqual(first ? [first.id] : []); }); it('summarizes states', () => expect([...countCertificationByState(records).values()].reduce((sum, value) => sum + value, 0)).toBe(selectCertification(records).length)); it('exposes configured states', () => expect(certificationStates(product).length).toBeGreaterThan(0)); it('reports analytics', () => expect(analyzeCertification(records).total).toBe(selectCertification(records).length)); it('applies edit policy', () => expect(canEditCertification(product, product.actors[0]!.role)).toBe(product.kinds.find(kind => kind.key === 'certification')!.editors.includes(product.actors[0]!.role))); });
