@@ -9,4 +9,5 @@ children.splice(5,0,{path:'credential-compliance',lazy:async()=>({Component:(awa
 children.splice(6,0,{path:'accommodation-control',lazy:async()=>({Component:(await import('../accommodation-control/AccommodationControlPage')).AccommodationControlPage})});
 children.splice(7,0,{path:'completion-dossier',lazy:async()=>({Component:(await import('../completion-dossier/CompletionDossierPage')).CompletionDossierPage})});
 children.splice(8,0,{path:'credential-renewal',lazy:async()=>({Component:(await import('../credential-renewal/CredentialRenewalPage')).CredentialRenewalPage})});
+children.splice(9,0,{path:'skills-gap-planning',lazy:async()=>({Component:(await import('../skills-gap-planning/SkillsGapPlanningPage')).SkillsGapPlanningPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
