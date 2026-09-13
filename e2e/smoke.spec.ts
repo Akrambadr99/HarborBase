@@ -51,7 +51,7 @@ test('expired credential renewal pins completion evidence and issues a linked aw
  await actor.selectOption('actor-1');await page.getByRole('button',{name:'Request credential renewal',exact:true}).click();await save();
  await page.getByRole('button',{name:/^Recertification requests/}).click();await actor.selectOption('actor-0');await page.getByRole('button',{name:'Issue renewed credential',exact:true}).click();await save();
  await page.reload();await page.getByRole('button',{name:/^Recertification requests/}).click();await expect(page.locator('.detail-title')).toContainText('issued');
- await expect(page.locator('.detail')).toContainText('2027-09-12');await page.getByRole('button',{name:/^Credential awards/}).click();await expect(page.locator('.list .row')).toHaveCount(2);
+ await expect(page.locator('.detail')).toContainText('2027-09-13');await page.getByRole('button',{name:/^Credential awards/}).click();await expect(page.locator('.list .row')).toHaveCount(2);
 });
 
 
@@ -75,3 +75,4 @@ test('prior-learning evidence becomes a durable completion after two-role review
     await expect(page.locator('.detail-title')).toContainText('issued');
 });
 test('versioned path enrollment requires prerequisite review and persists',async({page})=>{await page.goto('/learning-control');const role=page.getByRole('combobox',{name:'Learning role'});await page.getByRole('button',{name:'Request path enrollment'}).click();await role.selectOption('Supervisor');await page.getByRole('button',{name:'Approve path enrollment'}).click();await expect(page.getByRole('status')).toContainText('Enrollment approved');await page.reload();await expect(page.getByText('approved · version 3')).toBeVisible();await expect(page.getByRole('region',{name:'Learning control history'})).toContainText('path-enrollment-approved')});
+test('approved cohort seat becomes delivered attendance',async({page})=>{await page.goto('/cohort-delivery');const role=page.getByRole('combobox',{name:'Cohort role'});await page.getByRole('button',{name:'Reserve cohort seat'}).click();await role.selectOption('Supervisor');await page.getByRole('button',{name:'Approve cohort seat'}).click();await role.selectOption('Learning Admin');await page.getByRole('button',{name:'Start cohort'}).click();await role.selectOption('Facilitator');await page.getByRole('button',{name:'Deliver cohort session'}).click();await expect(page.getByRole('status')).toContainText('attendance');await page.reload();await expect(page.getByText('active · session delivered')).toBeVisible();await expect(page.getByRole('region',{name:'Cohort history'})).toContainText('cohort-session-delivered')});
