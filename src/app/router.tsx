@@ -14,4 +14,5 @@ children.splice(10,0,{path:'learning-funding',lazy:async()=>({Component:(await i
 children.splice(11,0,{path:'curriculum-releases',lazy:async()=>({Component:(await import('../curriculum-releases/CurriculumReleasesPage')).CurriculumReleasesPage})});
 children.splice(12,0,{path:'assessment-appeals',lazy:async()=>({Component:(await import('../assessment-appeals/AssessmentAppealsPage')).AssessmentAppealsPage})});
 children.splice(13,0,{path:'instructor-substitution',lazy:async()=>({Component:(await import('../instructor-substitution/InstructorSubstitutionPage')).InstructorSubstitutionPage})});
+children.splice(14,0,{path:'proctoring-incidents',lazy:async()=>({Component:(await import('../proctoring-incidents/ProctoringIncidentsPage')).ProctoringIncidentsPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
