@@ -6,4 +6,5 @@ children.splice(2, 0, { path: 'learning-control', lazy: async () => ({ Component
 children.splice(3,0,{path:'cohort-delivery',lazy:async()=>({Component:(await import('../cohort-delivery/CohortDeliveryPage')).CohortDeliveryPage})});
 children.splice(4,0,{path:'practicum-control',lazy:async()=>({Component:(await import('../practicum-control/PracticumControlPage')).PracticumControlPage})});
 children.splice(5,0,{path:'credential-compliance',lazy:async()=>({Component:(await import('../credential-compliance/CredentialCompliancePage')).CredentialCompliancePage})});
+children.splice(6,0,{path:'accommodation-control',lazy:async()=>({Component:(await import('../accommodation-control/AccommodationControlPage')).AccommodationControlPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
