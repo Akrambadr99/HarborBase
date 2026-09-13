@@ -12,4 +12,5 @@ children.splice(8,0,{path:'credential-renewal',lazy:async()=>({Component:(await 
 children.splice(9,0,{path:'skills-gap-planning',lazy:async()=>({Component:(await import('../skills-gap-planning/SkillsGapPlanningPage')).SkillsGapPlanningPage})});
 children.splice(10,0,{path:'learning-funding',lazy:async()=>({Component:(await import('../learning-funding/LearningFundingPage')).LearningFundingPage})});
 children.splice(11,0,{path:'curriculum-releases',lazy:async()=>({Component:(await import('../curriculum-releases/CurriculumReleasesPage')).CurriculumReleasesPage})});
+children.splice(12,0,{path:'assessment-appeals',lazy:async()=>({Component:(await import('../assessment-appeals/AssessmentAppealsPage')).AssessmentAppealsPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
