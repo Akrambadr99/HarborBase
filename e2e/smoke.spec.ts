@@ -105,3 +105,6 @@ test('credential suspension pauses and reinstatement resumes assessed renewal',a
 
 
 test('shows credential monitoring risk across learners',async({page})=>{await page.goto('/credential-compliance');const portfolio=page.getByRole('region',{name:'Credential monitoring portfolio'});await expect(portfolio).toContainText('MON-AR-18 · Amira Rahman · high risk');await expect(portfolio).toContainText('evidence pending 1');});
+
+
+test('compliance lead reassigns high-risk monitoring with evidence context',async({page})=>{await page.goto('/credential-compliance');await page.getByLabel('Monitoring role').selectOption('Compliance Lead');await page.getByRole('button',{name:'Schedule high-risk monitoring review'}).click();await expect(page.getByRole('status')).toContainText('evidence request');await expect(page.getByRole('region',{name:'Credential monitoring portfolio'})).toContainText('owner Senior compliance reviewer');await page.reload();await expect(page.getByRole('list',{name:'Monitoring review history'})).toContainText('failed uses 2');});
