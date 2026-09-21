@@ -54,6 +54,13 @@ export function closeCredentialMonitoring(state: MonitoringPortfolioState, comma
 }
 
 export function queryLearnerMonitoringHistory(state: MonitoringPortfolioState, monitoringId: string) {
+  const learnerProgress = queryLearnerProgress(state, monitoringId)
+  const complianceHistory = queryComplianceMonitoringHistory(state, monitoringId)
+  if (!learnerProgress || !complianceHistory) return null
+  return { ...learnerProgress, ...complianceHistory }
+}
+
+export function queryLearnerProgress(state: MonitoringPortfolioState, monitoringId: string) {
   const record = state.records.find((item) => item.monitoringId === monitoringId)
   if (!record) return null
   return {
@@ -61,9 +68,25 @@ export function queryLearnerMonitoringHistory(state: MonitoringPortfolioState, m
     learner: record.learner,
     credential: record.credential,
     currentProgress: { successfulUses: record.successfulUses, failedUses: record.failedUses, evidencePending: record.evidencePending },
+  }
+}
+
+export function queryComplianceMonitoringHistory(state: MonitoringPortfolioState, monitoringId: string) {
+  const record = state.records.find((item) => item.monitoringId === monitoringId)
+  if (!record) return null
+  return {
     reviews: state.reviewHistory.filter((item) => item.monitoringId === monitoringId).map((item) => ({ reviewId: item.id, owner: item.owner, requestedEvidence: item.evidenceRequested, priorFailures: item.failedUses })),
     closures: state.closures.filter((item) => item.monitoringId === monitoringId).map((item) => ({ closureId: item.id, outcome: item.outcome, acceptedEvidence: [...item.acceptedEvidence], previousFailedUses: item.previousFailedUses })),
   }
+}
+
+export interface LearnerProgressReader { readLearnerProgress(monitoringId: string): ReturnType<typeof queryLearnerProgress> }
+export interface ComplianceMonitoringReader { readComplianceHistory(monitoringId: string): ReturnType<typeof queryComplianceMonitoringHistory> }
+export class MonitoringReadAdapter implements LearnerProgressReader, ComplianceMonitoringReader {
+  private readonly readState: () => MonitoringPortfolioState
+  constructor(readState: () => MonitoringPortfolioState) { this.readState = readState }
+  readLearnerProgress(monitoringId: string) { return queryLearnerProgress(this.readState(), monitoringId) }
+  readComplianceHistory(monitoringId: string) { return queryComplianceMonitoringHistory(this.readState(), monitoringId) }
 }
 
 export interface MonitoringPersistence { load(): MonitoringPortfolioState | null; saveMonitoring(state: MonitoringPortfolioState): void }
@@ -71,7 +94,7 @@ export class BrowserMonitoringPersistence implements MonitoringPersistence {
   static key = 'skillorbit:monitoring-portfolio:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); return raw ? JSON.parse(raw) as MonitoringPortfolioState : null }
+  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], closures: saved.closures ?? [] } }
   saveMonitoring(state: MonitoringPortfolioState) { this.storage.setItem(BrowserMonitoringPersistence.key, JSON.stringify(state)) }
 }
 export class MonitoringPortfolioRepository {
