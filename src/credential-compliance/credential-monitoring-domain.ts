@@ -125,9 +125,12 @@ export function querySupervisorReviewQueue(state: MonitoringPortfolioState, asOf
   return monitoringIds.filter((monitoringId) => !state.closures.some((closure) => closure.monitoringId === monitoringId)).map((monitoringId) => {
     const review = state.reviewHistory.filter((item) => item.monitoringId === monitoringId).at(-1)
     if (!review) throw new Error('Scheduled monitoring review disappeared from the supervisor queue.')
+    const record = state.records.find((item) => item.monitoringId === monitoringId)
+    if (!record) throw new Error('Scheduled monitoring record disappeared from the supervisor queue.')
     const latest = state.evidenceSubmissions.filter((item) => item.monitoringId === review.monitoringId).at(-1)
     const decision = state.supervisorReviews.find((item) => item.submissionId === latest?.id)
-    return { monitoringId: review.monitoringId, learner: review.learner, owner: review.owner, requestedEvidence: review.evidenceRequested, dueOn: review.reviewOn, overdue: review.reviewOn < asOf && !decision, submissionId: latest?.id ?? null, evidenceReference: latest?.evidenceReference ?? null, status: !latest ? 'awaiting learner' as const : !decision ? 'awaiting supervisor' as const : decision.decision === 'returned' ? 'awaiting correction' as const : 'accepted' as const }
+    const previousDecision = state.supervisorReviews.filter((item) => item.monitoringId === monitoringId && item.submissionId !== latest?.id).at(-1)?.decision ?? null
+    return { monitoringId: review.monitoringId, learner: review.learner, credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, previousDecision, owner: review.owner, requestedEvidence: review.evidenceRequested, dueOn: review.reviewOn, overdue: review.reviewOn < asOf && !decision, submissionId: latest?.id ?? null, evidenceReference: latest?.evidenceReference ?? null, status: !latest ? 'awaiting learner' as const : !decision ? 'awaiting supervisor' as const : decision.decision === 'returned' ? 'awaiting correction' as const : 'accepted' as const }
   })
 }
 
