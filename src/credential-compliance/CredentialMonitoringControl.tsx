@@ -19,6 +19,8 @@ export function CredentialMonitoringControl() {
     "Compliance Reviewer",
   );
   const [message, setMessage] = useState("");
+  const [evidenceReference, setEvidenceReference] = useState("SUPERVISOR-OBS-18");
+  const [reviewRationale, setReviewRationale] = useState("Supervisor verified the observation against the current review.");
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
   const monitoringView = queryMonitoringInterface(state, "MON-AR-18", role);
@@ -47,7 +49,10 @@ export function CredentialMonitoringControl() {
     }
     queueMicrotask(() => feedback.current?.focus());
   };
-  const submitEvidence = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId: "MON-AR-18", learner: "Amira Rahman", evidenceReference: "SUPERVISOR-OBS-18", submittedOn: "2026-10-22" })); setMessage("Learner monitoring evidence submitted for the active review."); } catch (error) { setMessage(error instanceof Error ? error.message : "Evidence submission failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const latestSubmission = state.evidenceSubmissions.at(-1);
+  const latestDecision = state.supervisorReviews.find((item) => item.submissionId === latestSubmission?.id);
+  const submitEvidence = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId: "MON-AR-18", learner: "Amira Rahman", evidenceReference, submittedOn: "2026-10-22" })); setMessage("Learner monitoring evidence submitted for the active review."); } catch (error) { setMessage(error instanceof Error ? error.message : "Evidence submission failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviewEvidence = (decision: "accepted" | "returned") => { try { if (!latestSubmission) throw new Error("No learner evidence is awaiting review."); setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId: "MON-AR-18", submissionId: latestSubmission.id, decision, rationale: reviewRationale, reviewer: "Monitoring supervisor", reviewedOn: "2026-10-23" })); setMessage(`Supervisor ${decision} learner evidence.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Supervisor review failed."); } queueMicrotask(() => feedback.current?.focus()); };
   const close = () => {
     try {
       setState(
@@ -56,7 +61,7 @@ export function CredentialMonitoringControl() {
           expectedRevision: state.revision,
           role,
           monitoringId: "MON-AR-18",
-          acceptedEvidence: ["SUPERVISOR-OBS-18"],
+          acceptedEvidence: [latestSubmission?.evidenceReference ?? "SUPERVISOR-OBS-18"],
           supervisorApproval: "SUP-APP-18",
           complianceApproval: "COMP-APP-18",
           successfulUses: 5,
@@ -105,12 +110,16 @@ export function CredentialMonitoringControl() {
       >
         Schedule high-risk monitoring review
       </button>
-      <button disabled={role !== "Learner" || state.reviewHistory.length === 0 || state.evidenceSubmissions.length > 0} onClick={submitEvidence}>Submit learner monitoring evidence</button>
+      <label>Monitoring evidence reference <input value={evidenceReference} onChange={(event) => { setEvidenceReference(event.target.value); }} /></label>
+      <button disabled={role !== "Learner" || state.reviewHistory.length === 0 || (Boolean(latestSubmission) && latestDecision?.decision !== "returned")} onClick={submitEvidence}>Submit learner monitoring evidence</button>
+      <label>Supervisor review rationale <input value={reviewRationale} onChange={(event) => { setReviewRationale(event.target.value); }} /></label>
+      <button disabled={role !== "Supervisor" || !latestSubmission || Boolean(latestDecision)} onClick={() => { reviewEvidence("accepted"); }}>Accept monitoring evidence</button>
+      <button disabled={role !== "Supervisor" || !latestSubmission || Boolean(latestDecision)} onClick={() => { reviewEvidence("returned"); }}>Return monitoring evidence</button>
       <button
         disabled={
           role !== "Compliance Lead" ||
           state.reviewHistory.length === 0 ||
-          (state.evidenceSubmissions.length > 0 && !state.evidenceSubmissions.some((item) => item.evidenceReference === "SUPERVISOR-OBS-18")) ||
+          (Boolean(latestSubmission) && latestDecision?.decision !== "accepted") ||
           state.closures.length > 0
         }
         onClick={close}
@@ -130,7 +139,8 @@ export function CredentialMonitoringControl() {
           </li>
         ))}
       </ol>
-      <ol aria-label="Learner monitoring evidence">{state.evidenceSubmissions.map((item) => <li key={item.id}>{item.evidenceReference} · submitted {item.submittedOn} · review {item.reviewId}</li>)}</ol>
+      <ol aria-label="Learner monitoring evidence">{state.evidenceSubmissions.map((item) => <li key={item.id}>{item.evidenceReference} · submitted {item.submittedOn} · review {item.reviewId} · {state.supervisorReviews.find((decision) => decision.submissionId === item.id)?.decision ?? "awaiting supervisor review"}</li>)}</ol>
+      {role !== "Learner" && <ol aria-label="Supervisor evidence decisions">{state.supervisorReviews.map((item) => <li key={item.id}>{item.decision} · {item.reviewer} · {item.rationale} · {item.reviewedOn}</li>)}</ol>}
       <ol aria-label="Monitoring closure history">
         {state.closures.map((item) => (
           <li key={item.id}>
