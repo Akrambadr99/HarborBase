@@ -4,6 +4,7 @@ import {
   BrowserMonitoringPersistence,
   MonitoringPortfolioRepository,
   queryMonitoringInterface,
+  querySupervisorReviewQueue,
   type MonitoringControlRole,
 } from "./credential-monitoring-domain";
 
@@ -24,6 +25,7 @@ export function CredentialMonitoringControl() {
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
   const monitoringView = queryMonitoringInterface(state, "MON-AR-18", role);
+  const supervisorQueue = querySupervisorReviewQueue(state, '2026-10-23');
   const schedule = () => {
     try {
       setState(
@@ -104,6 +106,8 @@ export function CredentialMonitoringControl() {
         </p>
       ))}
       {monitoringView?.persona === "learner" ? <p aria-label="Learner monitoring lineage">Monitoring {monitoringView.monitoringPeriod.startsOn} to {monitoringView.monitoringPeriod.endsOn} · {monitoringView.status} · review {monitoringView.upcomingReview ?? "not scheduled"} · successful uses {monitoringView.successfulUses} · evidence {monitoringView.submittedEvidence.map((item) => item.evidenceReference).join(", ") || "pending"}</p> : monitoringView && <p aria-label="Reviewer monitoring lineage">{monitoringView.status} · owner {monitoringView.owner} · previous failures {monitoringView.previousFailures} · review {monitoringView.upcomingReview ?? "not scheduled"} · decision {monitoringView.complianceDecision?.outcome ?? "pending"}</p>}
+      {role === 'Supervisor' && <section aria-label="Supervisor review workload"><h3>Evidence review workload</h3><ol>{supervisorQueue.map((item) => <li key={item.monitoringId}>{item.learner} · {item.status} · due {item.dueOn}{item.overdue ? ' · overdue' : ''} · evidence {item.evidenceReference ?? item.requestedEvidence}</li>)}</ol></section>}
+      {monitoringView?.persona === 'learner' && <section aria-label="Learner review notices"><h3>Review notices</h3><ol>{monitoringView.notices.map((item) => <li key={item.id}>{item.decision === 'returned' ? 'Correction requested' : 'Evidence accepted'} · {item.evidenceReference} · {item.rationale}</li>)}</ol></section>}
       <button
         disabled={role !== "Compliance Lead" || state.reviewHistory.length > 0}
         onClick={schedule}

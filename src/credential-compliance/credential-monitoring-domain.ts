@@ -8,9 +8,10 @@ export interface MonitoringReview { id: string; monitoringId: string; learner: s
 export interface MonitoringClosure { id: string; monitoringId: string; reviewId: string; learner: string; previousFailedUses: number; acceptedEvidence: string[]; supervisorApproval: string; complianceApproval: string; successfulUses: number; outcome: 'completed'; closedBy: string; closedOn: string; immutable: true }
 export interface MonitoringEvidenceSubmission { id: string; monitoringId: string; learner: string; reviewId: string; evidenceReference: string; submittedOn: string; sourceRevision: number; immutable: true }
 export interface SupervisorEvidenceReview { id: string; monitoringId: string; submissionId: string; decision: 'accepted' | 'returned'; rationale: string; reviewer: string; reviewedOn: string; sourceRevision: number; immutable: true }
-export interface MonitoringPortfolioState { revision: number; records: CredentialMonitoringRecord[]; reviewHistory: MonitoringReview[]; evidenceSubmissions: MonitoringEvidenceSubmission[]; supervisorReviews: SupervisorEvidenceReview[]; closures: MonitoringClosure[] }
+export interface LearnerMonitoringNotice { id: string; monitoringId: string; learner: string; submissionId: string; reviewId: string; decision: SupervisorEvidenceReview['decision']; evidenceReference: string; rationale: string; issuedOn: string; immutable: true }
+export interface MonitoringPortfolioState { revision: number; records: CredentialMonitoringRecord[]; reviewHistory: MonitoringReview[]; evidenceSubmissions: MonitoringEvidenceSubmission[]; supervisorReviews: SupervisorEvidenceReview[]; learnerNotices: LearnerMonitoringNotice[]; closures: MonitoringClosure[] }
 export const monitoringOwnerPolicy = { maximumHighRiskReviews: 2 } as const
-export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], closures: [] }
+export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], learnerNotices: [], closures: [] }
 interface ScheduleMonitoringReview { id: string; expectedRevision: number; role: MonitoringControlRole; monitoringId: string; owner: string; reviewOn: string; asOf: string; evidenceRequested: string }
 
 export function scheduleMonitoringReview(state: MonitoringPortfolioState, command: ScheduleMonitoringReview) {
@@ -64,6 +65,7 @@ export function reviewMonitoringEvidence(state: MonitoringPortfolioState, comman
   if (command.rationale.trim().length < 15 || !command.reviewer.trim()) throw new Error('A named supervisor and specific rationale are required.')
   const next = structuredClone(state)
   next.supervisorReviews.push({ id: command.id, monitoringId: command.monitoringId, submissionId: latest.id, decision: command.decision, rationale: command.rationale.trim(), reviewer: command.reviewer.trim(), reviewedOn: command.reviewedOn, sourceRevision: state.revision, immutable: true })
+  next.learnerNotices.push({ id: `notice-${command.id}`, monitoringId: command.monitoringId, learner: latest.learner, submissionId: latest.id, reviewId: command.id, decision: command.decision, evidenceReference: latest.evidenceReference, rationale: command.rationale.trim(), issuedOn: command.reviewedOn, immutable: true })
   next.revision += 1
   return next
 }
@@ -114,7 +116,19 @@ export function queryLearnerProgress(state: MonitoringPortfolioState, monitoring
     monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn },
     evidenceSubmissions: state.evidenceSubmissions.filter((item) => item.monitoringId === monitoringId).map((item) => ({ evidenceReference: item.evidenceReference, submittedOn: item.submittedOn, supervisorDecision: state.supervisorReviews.find((review) => review.submissionId === item.id)?.decision ?? 'awaiting review' })),
     requestedEvidence: state.reviewHistory.filter((item) => item.monitoringId === monitoringId).map((item) => item.evidenceRequested),
+    notices: state.learnerNotices.filter((item) => item.monitoringId === monitoringId && item.learner === record.learner),
   }
+}
+
+export function querySupervisorReviewQueue(state: MonitoringPortfolioState, asOf: string) {
+  const monitoringIds = [...new Set(state.reviewHistory.map((item) => item.monitoringId))]
+  return monitoringIds.filter((monitoringId) => !state.closures.some((closure) => closure.monitoringId === monitoringId)).map((monitoringId) => {
+    const review = state.reviewHistory.filter((item) => item.monitoringId === monitoringId).at(-1)
+    if (!review) throw new Error('Scheduled monitoring review disappeared from the supervisor queue.')
+    const latest = state.evidenceSubmissions.filter((item) => item.monitoringId === review.monitoringId).at(-1)
+    const decision = state.supervisorReviews.find((item) => item.submissionId === latest?.id)
+    return { monitoringId: review.monitoringId, learner: review.learner, owner: review.owner, requestedEvidence: review.evidenceRequested, dueOn: review.reviewOn, overdue: review.reviewOn < asOf && !decision, submissionId: latest?.id ?? null, evidenceReference: latest?.evidenceReference ?? null, status: !latest ? 'awaiting learner' as const : !decision ? 'awaiting supervisor' as const : decision.decision === 'returned' ? 'awaiting correction' as const : 'accepted' as const }
+  })
 }
 
 export function queryComplianceMonitoringHistory(state: MonitoringPortfolioState, monitoringId: string) {
@@ -141,7 +155,7 @@ export function queryMonitoringInterface(state: MonitoringPortfolioState, monito
   const review = [...state.reviewHistory].reverse().find((item) => item.monitoringId === monitoringId) ?? null
   const closure = [...state.closures].reverse().find((item) => item.monitoringId === monitoringId) ?? null
   const submittedEvidence = state.evidenceSubmissions.filter((item) => item.monitoringId === monitoringId).map((item) => ({ evidenceReference: item.evidenceReference, submittedOn: item.submittedOn, supervisorDecision: state.supervisorReviews.find((decision) => decision.submissionId === item.id)?.decision ?? 'awaiting review' }))
-  if (role === 'Learner') return { persona: 'learner' as const, learner: record.learner, credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, status: closure ? 'completed' as const : 'active' as const, requestedEvidence: review?.evidenceRequested ?? null, submittedEvidence, upcomingReview: review?.reviewOn ?? null, successfulUses: record.successfulUses }
+  if (role === 'Learner') return { persona: 'learner' as const, learner: record.learner, credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, status: closure ? 'completed' as const : 'active' as const, requestedEvidence: review?.evidenceRequested ?? null, submittedEvidence, notices: state.learnerNotices.filter((item) => item.monitoringId === monitoringId && item.learner === record.learner), upcomingReview: review?.reviewOn ?? null, successfulUses: record.successfulUses }
   return { persona: 'reviewer' as const, learner: record.learner, credential: record.credential, status: closure ? 'completed' as const : 'active' as const, owner: record.owner, previousFailures: review?.failedUses ?? record.failedUses, requestedEvidence: review?.evidenceRequested ?? null, submittedEvidence, supervisorReviews: state.supervisorReviews.filter((item) => item.monitoringId === monitoringId), supervisorApproval: closure?.supervisorApproval ?? null, complianceDecision: closure ? { outcome: closure.outcome, approval: closure.complianceApproval, closedOn: closure.closedOn } : null, upcomingReview: review?.reviewOn ?? null }
 }
 
@@ -161,7 +175,7 @@ export class BrowserMonitoringPersistence implements MonitoringPersistence {
   static key = 'skillorbit:monitoring-portfolio:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], closures: saved.closures ?? [] } }
+  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], learnerNotices: saved.learnerNotices ?? [], closures: saved.closures ?? [] } }
   saveMonitoring(state: MonitoringPortfolioState) { this.storage.setItem(BrowserMonitoringPersistence.key, JSON.stringify(state)) }
 }
 export class MonitoringPortfolioRepository {
