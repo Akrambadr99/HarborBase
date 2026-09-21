@@ -3,6 +3,7 @@ import { credentialMonitoringPortfolio } from "./monitoring-portfolio";
 import {
   BrowserMonitoringPersistence,
   MonitoringPortfolioRepository,
+  queryMonitoringInterface,
   type MonitoringControlRole,
 } from "./credential-monitoring-domain";
 
@@ -20,6 +21,7 @@ export function CredentialMonitoringControl() {
   const [message, setMessage] = useState("");
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
+  const monitoringView = queryMonitoringInterface(state, "MON-AR-18", role);
   const schedule = () => {
     try {
       setState(
@@ -96,6 +98,7 @@ export function CredentialMonitoringControl() {
           owner {item.owner}
         </p>
       ))}
+      {monitoringView?.persona === "learner" ? <p aria-label="Learner monitoring lineage">Monitoring {monitoringView.monitoringPeriod.startsOn} to {monitoringView.monitoringPeriod.endsOn} · {monitoringView.status} · review {monitoringView.upcomingReview ?? "not scheduled"} · successful uses {monitoringView.successfulUses} · evidence {monitoringView.submittedEvidence.map((item) => item.evidenceReference).join(", ") || "pending"}</p> : monitoringView && <p aria-label="Reviewer monitoring lineage">{monitoringView.status} · owner {monitoringView.owner} · previous failures {monitoringView.previousFailures} · review {monitoringView.upcomingReview ?? "not scheduled"} · decision {monitoringView.complianceDecision?.outcome ?? "pending"}</p>}
       <button
         disabled={role !== "Compliance Lead" || state.reviewHistory.length > 0}
         onClick={schedule}

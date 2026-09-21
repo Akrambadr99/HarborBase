@@ -110,6 +110,16 @@ export function queryCredentialMonitoringState(state: MonitoringPortfolioState, 
   return { credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, monitoringStatus: closure ? 'completed' as const : 'active' as const, latestComplianceDecision: closure ? { closureId: closure.id, outcome: closure.outcome, acceptedEvidence: [...closure.acceptedEvidence], supervisorApproval: closure.supervisorApproval, complianceApproval: closure.complianceApproval } : null }
 }
 
+export function queryMonitoringInterface(state: MonitoringPortfolioState, monitoringId: string, role: MonitoringControlRole) {
+  const record = state.records.find((item) => item.monitoringId === monitoringId)
+  if (!record) return null
+  const review = [...state.reviewHistory].reverse().find((item) => item.monitoringId === monitoringId) ?? null
+  const closure = [...state.closures].reverse().find((item) => item.monitoringId === monitoringId) ?? null
+  const submittedEvidence = state.evidenceSubmissions.filter((item) => item.monitoringId === monitoringId).map((item) => ({ evidenceReference: item.evidenceReference, submittedOn: item.submittedOn }))
+  if (role === 'Learner') return { persona: 'learner' as const, learner: record.learner, credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, status: closure ? 'completed' as const : 'active' as const, requestedEvidence: review?.evidenceRequested ?? null, submittedEvidence, upcomingReview: review?.reviewOn ?? null, successfulUses: record.successfulUses }
+  return { persona: 'reviewer' as const, learner: record.learner, credential: record.credential, status: closure ? 'completed' as const : 'active' as const, owner: record.owner, previousFailures: review?.failedUses ?? record.failedUses, requestedEvidence: review?.evidenceRequested ?? null, submittedEvidence, supervisorApproval: closure?.supervisorApproval ?? null, complianceDecision: closure ? { outcome: closure.outcome, approval: closure.complianceApproval, closedOn: closure.closedOn } : null, upcomingReview: review?.reviewOn ?? null }
+}
+
 export interface LearnerProgressReader { readLearnerProgress(monitoringId: string): ReturnType<typeof queryLearnerProgress> }
 export interface CredentialMonitoringReader { readCredentialState(monitoringId: string): ReturnType<typeof queryCredentialMonitoringState> }
 export interface ComplianceMonitoringReader { readComplianceHistory(monitoringId: string): ReturnType<typeof queryComplianceMonitoringHistory> }
