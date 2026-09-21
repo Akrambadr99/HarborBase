@@ -80,12 +80,21 @@ export function queryComplianceMonitoringHistory(state: MonitoringPortfolioState
   }
 }
 
+export function queryCredentialMonitoringState(state: MonitoringPortfolioState, monitoringId: string) {
+  const record = state.records.find((item) => item.monitoringId === monitoringId)
+  if (!record) return null
+  const closure = [...state.closures].reverse().find((item) => item.monitoringId === monitoringId) ?? null
+  return { credential: record.credential, monitoringPeriod: { startsOn: record.startsOn, endsOn: record.endsOn }, monitoringStatus: closure ? 'completed' as const : 'active' as const, latestComplianceDecision: closure ? { closureId: closure.id, outcome: closure.outcome, acceptedEvidence: [...closure.acceptedEvidence], supervisorApproval: closure.supervisorApproval, complianceApproval: closure.complianceApproval } : null }
+}
+
 export interface LearnerProgressReader { readLearnerProgress(monitoringId: string): ReturnType<typeof queryLearnerProgress> }
+export interface CredentialMonitoringReader { readCredentialState(monitoringId: string): ReturnType<typeof queryCredentialMonitoringState> }
 export interface ComplianceMonitoringReader { readComplianceHistory(monitoringId: string): ReturnType<typeof queryComplianceMonitoringHistory> }
-export class MonitoringReadAdapter implements LearnerProgressReader, ComplianceMonitoringReader {
+export class MonitoringReadAdapter implements LearnerProgressReader, CredentialMonitoringReader, ComplianceMonitoringReader {
   private readonly readState: () => MonitoringPortfolioState
   constructor(readState: () => MonitoringPortfolioState) { this.readState = readState }
   readLearnerProgress(monitoringId: string) { return queryLearnerProgress(this.readState(), monitoringId) }
+  readCredentialState(monitoringId: string) { return queryCredentialMonitoringState(this.readState(), monitoringId) }
   readComplianceHistory(monitoringId: string) { return queryComplianceMonitoringHistory(this.readState(), monitoringId) }
 }
 
