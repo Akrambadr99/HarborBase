@@ -1,6 +1,9 @@
 import { credentialMonitoringPortfolio, seededCredentialMonitoring, type CredentialMonitoringRecord } from './monitoring-portfolio'
 
-export type MonitoringControlRole = 'Compliance Reviewer' | 'Compliance Lead'
+export type MonitoringControlRole = 'Learner' | 'Supervisor' | 'Compliance Reviewer' | 'Compliance Lead'
+export function monitoringCapabilities(role: MonitoringControlRole) {
+  return { canSubmitEvidence: role === 'Learner', canApproveEvidence: role === 'Supervisor' || role === 'Compliance Lead', canRequestEvidence: role === 'Compliance Reviewer' || role === 'Compliance Lead', canReassignReview: role === 'Compliance Lead', canCloseMonitoring: role === 'Compliance Lead' } as const
+}
 export interface MonitoringReview { id: string; monitoringId: string; learner: string; previousOwner: string; owner: string; reviewOn: string; failedUses: number; evidenceRequested: string; decisionDue: true; immutable: true }
 export interface MonitoringClosure { id: string; monitoringId: string; reviewId: string; learner: string; previousFailedUses: number; acceptedEvidence: string[]; supervisorApproval: string; complianceApproval: string; successfulUses: number; outcome: 'completed'; closedBy: string; closedOn: string; immutable: true }
 export interface MonitoringPortfolioState { revision: number; records: CredentialMonitoringRecord[]; reviewHistory: MonitoringReview[]; closures: MonitoringClosure[] }
@@ -11,7 +14,7 @@ interface ScheduleMonitoringReview { id: string; expectedRevision: number; role:
 export function scheduleMonitoringReview(state: MonitoringPortfolioState, command: ScheduleMonitoringReview) {
   if (state.reviewHistory.some((item) => item.id === command.id)) return state
   if (state.revision !== command.expectedRevision) throw new Error('Credential monitoring changed. Refresh before scheduling review.')
-  if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can reassign a high-risk monitoring review.')
+  if (!monitoringCapabilities(command.role).canReassignReview) throw new Error('Only the compliance lead can reassign a high-risk monitoring review.')
   const record = state.records.find((item) => item.monitoringId === command.monitoringId)
   if (!record) throw new Error('Monitoring record was not found.')
   const status = credentialMonitoringPortfolio([record], command.asOf)[0]
@@ -33,7 +36,7 @@ interface CloseCredentialMonitoring { id: string; expectedRevision: number; role
 export function closeCredentialMonitoring(state: MonitoringPortfolioState, command: CloseCredentialMonitoring) {
   if (state.closures.some((item) => item.id === command.id)) return state
   if (state.revision !== command.expectedRevision) throw new Error('Credential monitoring changed. Refresh before closure.')
-  if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can independently close monitoring.')
+  if (!monitoringCapabilities(command.role).canCloseMonitoring) throw new Error('Only the compliance lead can independently close monitoring.')
   const record = state.records.find((item) => item.monitoringId === command.monitoringId)
   const review = [...state.reviewHistory].reverse().find((item) => item.monitoringId === command.monitoringId)
   if (!record || !review) throw new Error('A governed monitoring review is required before closure.')
@@ -63,10 +66,17 @@ export function queryLearnerMonitoringHistory(state: MonitoringPortfolioState, m
   }
 }
 
-export class MonitoringPortfolioRepository {
-  static key = 'skillorbit:monitoring-portfolio:v2'
+export interface MonitoringPersistence { load(): MonitoringPortfolioState | null; saveMonitoring(state: MonitoringPortfolioState): void }
+export class BrowserMonitoringPersistence implements MonitoringPersistence {
+  static key = 'skillorbit:monitoring-portfolio:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  read(): MonitoringPortfolioState { const raw = this.storage.getItem(MonitoringPortfolioRepository.key); return raw ? JSON.parse(raw) as MonitoringPortfolioState : structuredClone(initialMonitoringPortfolioState) }
-  dispatch(command: ScheduleMonitoringReview | CloseCredentialMonitoring) { const current = this.read(); const next = 'acceptedEvidence' in command ? closeCredentialMonitoring(current, command) : scheduleMonitoringReview(current, command); if (next !== current) this.storage.setItem(MonitoringPortfolioRepository.key, JSON.stringify(next)); return next }
+  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); return raw ? JSON.parse(raw) as MonitoringPortfolioState : null }
+  saveMonitoring(state: MonitoringPortfolioState) { this.storage.setItem(BrowserMonitoringPersistence.key, JSON.stringify(state)) }
+}
+export class MonitoringPortfolioRepository {
+  private readonly persistence: MonitoringPersistence
+  constructor(persistence: MonitoringPersistence) { this.persistence = persistence }
+  read(): MonitoringPortfolioState { return this.persistence.load() ?? structuredClone(initialMonitoringPortfolioState) }
+  dispatch(command: ScheduleMonitoringReview | CloseCredentialMonitoring) { const current = this.read(); const next = 'acceptedEvidence' in command ? closeCredentialMonitoring(current, command) : scheduleMonitoringReview(current, command); if (next !== current) this.persistence.saveMonitoring(next); return next }
 }
