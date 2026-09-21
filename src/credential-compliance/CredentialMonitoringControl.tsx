@@ -22,10 +22,16 @@ export function CredentialMonitoringControl() {
   const [message, setMessage] = useState("");
   const [evidenceReference, setEvidenceReference] = useState("SUPERVISOR-OBS-18");
   const [reviewRationale, setReviewRationale] = useState("Supervisor verified the observation against the current review.");
+  const [rescheduledOn, setRescheduledOn] = useState("2026-10-25");
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
   const monitoringView = queryMonitoringInterface(state, "MON-AR-18", role);
   const supervisorQueue = querySupervisorReviewQueue(state, '2026-10-23');
+  const currentReview = state.reviewHistory.filter((item) => item.monitoringId === "MON-AR-18").at(-1);
+  const currentNotice = state.scheduledNotices.find((item) => item.reviewId === currentReview?.id && item.audience === (role === "Learner" ? "learner" : "supervisor"));
+  const currentAcknowledgement = state.noticeAcknowledgements.find((item) => item.noticeId === currentNotice?.id);
+  const reschedule = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId: "MON-AR-18", reviewOn: rescheduledOn, asOf: "2026-10-20", reason: "The supervisor observation window moved after learner availability changed." })); setMessage("Review rescheduled; prior notices remain historical and new cycle notices are prepared."); } catch (error) { setMessage(error instanceof Error ? error.message : "Review rescheduling failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const acknowledgeNotice = () => { if (!currentNotice) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, noticeId: currentNotice.id, actor: role === "Learner" ? "Amira Rahman" : "Monitoring supervisor", acknowledgedOn: "2026-10-21" })); setMessage("Current review-cycle notice acknowledged locally."); } catch (error) { setMessage(error instanceof Error ? error.message : "Notice acknowledgement failed."); } queueMicrotask(() => feedback.current?.focus()); };
   const schedule = () => {
     try {
       setState(
@@ -108,12 +114,14 @@ export function CredentialMonitoringControl() {
       {monitoringView?.persona === "learner" ? <p aria-label="Learner monitoring lineage">Monitoring {monitoringView.monitoringPeriod.startsOn} to {monitoringView.monitoringPeriod.endsOn} · {monitoringView.status} · review {monitoringView.upcomingReview ?? "not scheduled"} · successful uses {monitoringView.successfulUses} · evidence {monitoringView.submittedEvidence.map((item) => item.evidenceReference).join(", ") || "pending"}</p> : monitoringView && <p aria-label="Reviewer monitoring lineage">{monitoringView.status} · owner {monitoringView.owner} · previous failures {monitoringView.previousFailures} · review {monitoringView.upcomingReview ?? "not scheduled"} · decision {monitoringView.complianceDecision?.outcome ?? "pending"}</p>}
       {role === 'Supervisor' && <section aria-label="Supervisor review workload"><h3>Evidence review workload</h3><ol>{supervisorQueue.map((item) => <li key={item.monitoringId}>{item.learner} · {item.credential} · monitoring {item.monitoringPeriod.startsOn} to {item.monitoringPeriod.endsOn} · {item.status} · due {item.dueOn}{item.overdue ? ' · overdue' : ''} · evidence {item.evidenceReference ?? item.requestedEvidence} · previous decision {item.previousDecision ?? 'none'}</li>)}</ol></section>}
       {monitoringView?.persona === 'learner' && <section aria-label="Learner review notices"><h3>Review notices</h3><ol>{monitoringView.notices.map((item) => <li key={item.id}>{item.decision === 'returned' ? 'Correction requested' : 'Evidence accepted'} · {item.evidenceReference} · {item.rationale}</li>)}</ol></section>}
+      {currentReview && <section aria-label="Scheduled review communication"><h3>Scheduled evidence review</h3><p>Current cycle {currentReview.id} · due {currentReview.reviewOn}</p>{(role === "Learner" || role === "Supervisor") && currentNotice && <><p aria-label="Current review notice">{currentNotice.message} · {currentAcknowledgement ? "acknowledged" : "acknowledgement pending"}</p><button disabled={Boolean(currentAcknowledgement)} onClick={acknowledgeNotice}>Acknowledge current review notice</button></>}<ol aria-label="Review notice history">{state.scheduledNotices.filter((item) => item.monitoringId === currentReview.monitoringId && (role === "Learner" ? item.audience === "learner" : role === "Supervisor" ? item.audience === "supervisor" : false)).map((item) => <li key={item.id}>{item.reviewId} · due {item.dueOn} · {item.reviewId === currentReview.id ? "current" : "superseded"}</li>)}</ol></section>}
       <button
         disabled={role !== "Compliance Lead" || state.reviewHistory.length > 0}
         onClick={schedule}
       >
         Schedule high-risk monitoring review
       </button>
+      <label>Rescheduled review date<input type="date" value={rescheduledOn} onChange={(event) => { setRescheduledOn(event.target.value); }} /></label><button disabled={role !== "Compliance Lead" || !currentReview || Boolean(state.closures.length)} onClick={reschedule}>Reschedule evidence review</button>
       <label>Monitoring evidence reference <input value={evidenceReference} onChange={(event) => { setEvidenceReference(event.target.value); }} /></label>
       <button disabled={role !== "Learner" || state.reviewHistory.length === 0 || (Boolean(latestSubmission) && latestDecision?.decision !== "returned")} onClick={submitEvidence}>Submit learner monitoring evidence</button>
       <label>Supervisor review rationale <input value={reviewRationale} onChange={(event) => { setReviewRationale(event.target.value); }} /></label>
