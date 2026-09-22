@@ -6,8 +6,8 @@ export function monitoringCapabilities(role: MonitoringControlRole) {
 }
 export interface MonitoringReview { id: string; monitoringId: string; learner: string; previousOwner: string; owner: string; assignedSupervisor?: string; reviewOn: string; failedUses: number; evidenceRequested: string; decisionDue: true; immutable: true }
 export interface MonitoringClosure { id: string; monitoringId: string; reviewId: string; learner: string; previousFailedUses: number; acceptedEvidence: string[]; supervisorApproval: string; complianceApproval: string; successfulUses: number; outcome: 'completed'; closedBy: string; closedOn: string; immutable: true }
-export interface MonitoringEvidenceSubmission { id: string; monitoringId: string; learner: string; reviewId: string; evidenceReference: string; submittedOn: string; sourceRevision: number; immutable: true }
-export interface SupervisorEvidenceReview { id: string; monitoringId: string; submissionId: string; decision: 'accepted' | 'returned'; rationale: string; reviewer: string; reviewedOn: string; sourceRevision: number; immutable: true }
+export interface MonitoringEvidenceSubmission { id: string; monitoringId: string; learner: string; reviewId: string; evidenceReference: string; submittedOn: string; sourceRevision: number; supersedesSubmissionId?: string; immutable: true }
+export interface SupervisorEvidenceReview { id: string; monitoringId: string; submissionId: string; decision: 'accepted' | 'returned'; rationale: string; reviewer: string; reviewedOn: string; reviewId?: string; sourceRevision: number; immutable: true }
 export interface LearnerMonitoringNotice { id: string; monitoringId: string; learner: string; submissionId: string; reviewId: string; decision: SupervisorEvidenceReview['decision']; evidenceReference: string; rationale: string; issuedOn: string; immutable: true }
 export interface ScheduledReviewNotice { id: string; monitoringId: string; reviewId: string; audience: 'learner' | 'supervisor'; recipient: string; dueOn: string; message: string; issuedOn: string; immutable: true }
 export interface ReviewNoticeAcknowledgement { id: string; noticeId: string; reviewId: string; actor: string; acknowledgedOn: string; immutable: true }
@@ -51,7 +51,7 @@ export function decideDueMonitoringReview(state: MonitoringPortfolioState, comma
   const learnerAck = state.noticeAcknowledgements.find((item) => item.noticeId === learnerNotice?.id)
   const supervisorAck = state.noticeAcknowledgements.find((item) => item.noticeId === supervisorNotice?.id)
   if (!command.decidedBy.trim() || command.reason.trim().length < 20) throw new Error('Due-review decision needs a named lead and specific rationale.')
-  if (command.outcome === 'completed' && (!latest || supervisor?.decision !== 'accepted' || !learnerAck || !supervisorAck)) throw new Error('Completion needs accepted evidence and both current-cycle acknowledgements.')
+  if (command.outcome === 'completed' && (!latest || supervisor?.decision !== 'accepted' || (review.assignedSupervisor && supervisor.reviewId !== review.id) || !learnerAck || !supervisorAck)) throw new Error('Completion needs accepted evidence and both current-cycle acknowledgements.')
   if (command.outcome !== 'completed' && (!command.nextReviewOn || command.nextReviewOn <= command.decidedOn)) throw new Error('Deferred or missed review needs a future extension date.')
   const next = structuredClone(state)
   const nextReviewId = command.outcome === 'completed' ? null : `${command.id}:review`
@@ -100,7 +100,7 @@ export function submitMonitoringEvidence(state: MonitoringPortfolioState, comman
   if (latestSubmission && !state.supervisorReviews.some((item) => item.submissionId === latestSubmission.id && item.decision === 'returned')) throw new Error('The current submission awaits supervisor review or was already accepted.')
   if (state.evidenceSubmissions.some((item) => item.monitoringId === command.monitoringId && item.evidenceReference === command.evidenceReference)) throw new Error('This evidence was already submitted.')
   const next = structuredClone(state)
-  next.evidenceSubmissions.push({ id: command.id, monitoringId: command.monitoringId, learner: command.learner, reviewId: review.id, evidenceReference: command.evidenceReference.trim(), submittedOn: command.submittedOn, sourceRevision: state.revision, immutable: true })
+  next.evidenceSubmissions.push({ id: command.id, monitoringId: command.monitoringId, learner: command.learner, reviewId: review.id, evidenceReference: command.evidenceReference.trim(), submittedOn: command.submittedOn, sourceRevision: state.revision, ...(latestSubmission ? { supersedesSubmissionId: latestSubmission.id } : {}), immutable: true })
   next.revision += 1
   return next
 }
@@ -120,7 +120,7 @@ export function reviewMonitoringEvidence(state: MonitoringPortfolioState, comman
   const currentNotice = state.scheduledNotices.find((item) => item.reviewId === currentReview?.id && item.audience === 'supervisor')
   if (currentReview?.assignedSupervisor && !state.noticeAcknowledgements.some((item) => item.noticeId === currentNotice?.id && item.actor === currentReview.assignedSupervisor)) throw new Error('Replacement supervisor must acknowledge the current review notice before deciding learner evidence.')
   const next = structuredClone(state)
-  next.supervisorReviews.push({ id: command.id, monitoringId: command.monitoringId, submissionId: latest.id, decision: command.decision, rationale: command.rationale.trim(), reviewer: command.reviewer.trim(), reviewedOn: command.reviewedOn, sourceRevision: state.revision, immutable: true })
+  next.supervisorReviews.push({ id: command.id, monitoringId: command.monitoringId, submissionId: latest.id, decision: command.decision, rationale: command.rationale.trim(), reviewer: command.reviewer.trim(), reviewedOn: command.reviewedOn, ...(currentReview ? { reviewId: currentReview.id } : {}), sourceRevision: state.revision, immutable: true })
   next.learnerNotices.push({ id: `notice-${command.id}`, monitoringId: command.monitoringId, learner: latest.learner, submissionId: latest.id, reviewId: command.id, decision: command.decision, evidenceReference: latest.evidenceReference, rationale: command.rationale.trim(), issuedOn: command.reviewedOn, immutable: true })
   next.revision += 1
   return next
@@ -141,8 +141,9 @@ export function closeCredentialMonitoring(state: MonitoringPortfolioState, comma
   if (submittedEvidence.size > 0) {
     const latest = [...state.evidenceSubmissions].reverse().find((item) => item.monitoringId === command.monitoringId)
     const decision = state.supervisorReviews.find((item) => item.submissionId === latest?.id)
-    if (decision?.decision !== 'accepted' || !command.acceptedEvidence.includes(latest?.evidenceReference ?? '')) throw new Error('Current learner evidence requires an accepted supervisor review before compliance closure.')
+    if (decision?.decision !== 'accepted' || (review.assignedSupervisor && decision.reviewId !== review.id) || !command.acceptedEvidence.includes(latest?.evidenceReference ?? '')) throw new Error('Current learner evidence requires an accepted supervisor review before compliance closure.')
   }
+  if (review.assignedSupervisor && !state.dueReviewDecisions.some((item) => item.reviewId === review.id && item.outcome === 'completed' && item.evidenceSubmissionId === state.evidenceSubmissions.filter((submission) => submission.monitoringId === record.monitoringId).at(-1)?.id)) throw new Error('Replacement supervisor evidence needs an independent current-cycle compliance completion decision.')
   const next = structuredClone(state)
   const target = next.records.find((item) => item.monitoringId === record.monitoringId)
   if (!target) throw new Error('Monitoring record disappeared during closure.')
