@@ -14,8 +14,54 @@ export interface ReviewNoticeAcknowledgement { id: string; noticeId: string; rev
 export interface DueReviewDecision { id: string; monitoringId: string; reviewId: string; outcome: 'completed' | 'deferred' | 'missed'; evidenceSubmissionId: string | null; supervisorReviewId: string | null; learnerAcknowledgementId: string | null; supervisorAcknowledgementId: string | null; reason: string; nextReviewId: string | null; decidedBy: string; decidedOn: string; immutable: true }
 export interface SupervisorAvailabilityException { id: string; monitoringId: string; reviewId: string; nextReviewId: string; unavailableSupervisor: string; replacementSupervisor: string; cause?: 'unavailable' | 'returned evidence'; returnedDecisionId?: string; reason: string; approvalReference: string; approvedBy: string; previousReviewOn: string; revisedReviewOn: string; decidedOn: string; immutable: true }
 export interface MonitoringPortfolioState { revision: number; records: CredentialMonitoringRecord[]; reviewHistory: MonitoringReview[]; evidenceSubmissions: MonitoringEvidenceSubmission[]; supervisorReviews: SupervisorEvidenceReview[]; learnerNotices: LearnerMonitoringNotice[]; scheduledNotices: ScheduledReviewNotice[]; noticeAcknowledgements: ReviewNoticeAcknowledgement[]; dueReviewDecisions: DueReviewDecision[]; supervisorExceptions: SupervisorAvailabilityException[]; closures: MonitoringClosure[] }
+export interface ComplianceRecoveryArchive { schemaVersion: 1; id: string; monitoringId: string; learner: string; credential: string; sourceRevision: number; createdOn: string; progressAtCapture: { successfulUses: number; failedUses: number; evidencePending: number }; history: Pick<MonitoringPortfolioState, 'reviewHistory' | 'evidenceSubmissions' | 'supervisorReviews' | 'learnerNotices' | 'scheduledNotices' | 'noticeAcknowledgements' | 'dueReviewDecisions' | 'supervisorExceptions' | 'closures'> }
+export interface ComplianceRecoveryImport { id: string; archiveId: string; monitoringId: string; importedBy: string; importedOn: string; immutable: true }
+export interface MonitoringPortfolioState { recoveryImports: ComplianceRecoveryImport[] }
 export const monitoringOwnerPolicy = { maximumHighRiskReviews: 2, maximumActiveSupervisorReviews: 2 } as const
-export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], learnerNotices: [], scheduledNotices: [], noticeAcknowledgements: [], dueReviewDecisions: [], supervisorExceptions: [], closures: [] }
+export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], learnerNotices: [], scheduledNotices: [], noticeAcknowledgements: [], dueReviewDecisions: [], supervisorExceptions: [], closures: [], recoveryImports: [] }
+
+const complianceHistoryKeys = ['reviewHistory', 'evidenceSubmissions', 'supervisorReviews', 'learnerNotices', 'scheduledNotices', 'noticeAcknowledgements', 'dueReviewDecisions', 'supervisorExceptions', 'closures'] as const
+export function exportComplianceRecovery(state: MonitoringPortfolioState, command: { id: string; monitoringId: string; role: MonitoringControlRole; createdOn: string }): ComplianceRecoveryArchive {
+  if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can export monitoring recovery evidence.')
+  const record = state.records.find((item) => item.monitoringId === command.monitoringId)
+  if (!record || !command.id.trim() || !/^20\d{2}-\d{2}-\d{2}$/.test(command.createdOn)) throw new Error('Monitoring identity, archive ID, and business date are required.')
+  const noticeIds = new Set(state.scheduledNotices.filter((item) => item.monitoringId === command.monitoringId).map((item) => item.id))
+  const history = Object.fromEntries(complianceHistoryKeys.map((key) => [key, structuredClone(key === 'noticeAcknowledgements' ? state.noticeAcknowledgements.filter((item) => noticeIds.has(item.noticeId)) : state[key].filter((item) => item.monitoringId === command.monitoringId))])) as unknown as ComplianceRecoveryArchive['history']
+  return { schemaVersion: 1, id: command.id, monitoringId: record.monitoringId, learner: record.learner, credential: record.credential, sourceRevision: state.revision, createdOn: command.createdOn, progressAtCapture: { successfulUses: record.successfulUses, failedUses: record.failedUses, evidencePending: record.evidencePending }, history }
+}
+export function parseComplianceRecovery(raw: string): ComplianceRecoveryArchive {
+  const archive = JSON.parse(raw) as unknown as Partial<ComplianceRecoveryArchive>
+  if (archive.schemaVersion !== 1) throw new Error('Unsupported monitoring recovery archive schema.')
+  if (!archive.id || !archive.monitoringId || !archive.learner || !archive.history || complianceHistoryKeys.some((key) => !Array.isArray(archive.history?.[key]))) throw new Error('Monitoring recovery archive is structurally incomplete.')
+  return archive as ComplianceRecoveryArchive
+}
+export function previewComplianceRecovery(state: MonitoringPortfolioState, archive: ComplianceRecoveryArchive) {
+  const reasons: string[] = []
+  const record = state.records.find((item) => item.monitoringId === archive.monitoringId)
+  if ((archive as { schemaVersion: number }).schemaVersion !== 1) reasons.push('Unsupported archive schema.')
+  if (!record?.learner || record.learner !== archive.learner || record.credential !== archive.credential) reasons.push('Learner or credential identity does not match the authoritative monitoring record.')
+  if (state.revision !== archive.sourceRevision) reasons.push('Monitoring state changed after export; current learner progress and compliance decisions cannot be overwritten.')
+  if (state.recoveryImports.some((item) => item.archiveId === archive.id)) reasons.push('Archive already imported.')
+  const reviews = archive.history.reviewHistory
+  if (complianceHistoryKeys.some((key) => key !== 'noticeAcknowledgements' && archive.history[key].some((item) => item.monitoringId !== archive.monitoringId))) reasons.push('Archive contains history for a different learner monitoring record.')
+  if (archive.history.evidenceSubmissions.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.scheduledNotices.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.noticeAcknowledgements.some((item) => !archive.history.scheduledNotices.some((notice) => notice.id === item.noticeId && notice.reviewId === item.reviewId))) reasons.push('Review-cycle or notice lineage is incomplete.')
+  if (archive.history.supervisorReviews.some((item) => !archive.history.evidenceSubmissions.some((submission) => submission.id === item.submissionId)) || archive.history.dueReviewDecisions.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.supervisorExceptions.some((item) => !reviews.some((review) => review.id === item.reviewId) || !reviews.some((review) => review.id === item.nextReviewId))) reasons.push('Evidence decision or supervisor assignment references a missing review.')
+  if (archive.history.closures.some((item) => !reviews.some((review) => review.id === item.reviewId))) reasons.push('Monitoring closure has no archived review source.')
+  for (const key of complianceHistoryKeys) for (const item of archive.history[key]) { const existing = state[key].find((entry) => entry.id === item.id); if (existing && JSON.stringify(existing) !== JSON.stringify(item)) reasons.push(`Existing ${key} record ${item.id} conflicts with archive evidence.`) }
+  return { ready: reasons.length === 0, reasons, archiveId: archive.id, sourceRevision: archive.sourceRevision, currentRevision: state.revision }
+}
+export function importComplianceRecovery(state: MonitoringPortfolioState, archive: ComplianceRecoveryArchive, command: { id: string; expectedRevision: number; role: MonitoringControlRole; importedBy: string; importedOn: string }) {
+  if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can import monitoring recovery evidence.')
+  if (state.recoveryImports.some((item) => item.archiveId === archive.id)) return state
+  if (state.revision !== command.expectedRevision) throw new Error('Monitoring state changed before recovery import.')
+  const preview = previewComplianceRecovery(state, archive)
+  if (!preview.ready || !command.id.trim() || !command.importedBy.trim()) throw new Error(preview.reasons.join(' ') || 'Recovery import identity and actor are required.')
+  const next = structuredClone(state)
+  for (const key of complianceHistoryKeys) (next as unknown as Record<string, unknown>)[key] = [...next[key], ...structuredClone(archive.history[key]).filter((item) => !next[key].some((existing) => existing.id === item.id))]
+  next.recoveryImports.push({ id: command.id, archiveId: archive.id, monitoringId: archive.monitoringId, importedBy: command.importedBy.trim(), importedOn: command.importedOn, immutable: true })
+  next.revision += 1
+  return next
+}
 function addReviewNotices(state: MonitoringPortfolioState, review: MonitoringReview, issuedOn: string, credential: string) { state.scheduledNotices.push({ id: `${review.id}:learner`, monitoringId: review.monitoringId, reviewId: review.id, audience: 'learner', recipient: review.learner, dueOn: review.reviewOn, message: `${credential} evidence review is due. ${review.evidenceRequested}`, issuedOn, immutable: true }, { id: `${review.id}:supervisor`, monitoringId: review.monitoringId, reviewId: review.id, audience: 'supervisor', recipient: review.assignedSupervisor ?? 'Monitoring supervisor', dueOn: review.reviewOn, message: `${credential} review for ${review.learner} is due. ${String(review.failedUses)} failed uses require supervisor evidence review.`, issuedOn, immutable: true }) }
 
 export function reassignUnavailableSupervisor(state: MonitoringPortfolioState, command: { id: string; expectedRevision: number; role: MonitoringControlRole; monitoringId: string; replacementSupervisor: string; reviewOn: string; asOf: string; cause?: 'unavailable' | 'returned evidence'; reason: string; approvalReference: string; approvedBy: string }) {
@@ -239,7 +285,7 @@ export class BrowserMonitoringPersistence implements MonitoringPersistence {
   static key = 'skillorbit:monitoring-portfolio:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], learnerNotices: saved.learnerNotices ?? [], scheduledNotices: saved.scheduledNotices ?? [], noticeAcknowledgements: saved.noticeAcknowledgements ?? [], dueReviewDecisions: saved.dueReviewDecisions ?? [], supervisorExceptions: saved.supervisorExceptions ?? [], closures: saved.closures ?? [] } }
+  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], learnerNotices: saved.learnerNotices ?? [], scheduledNotices: saved.scheduledNotices ?? [], noticeAcknowledgements: saved.noticeAcknowledgements ?? [], dueReviewDecisions: saved.dueReviewDecisions ?? [], supervisorExceptions: saved.supervisorExceptions ?? [], closures: saved.closures ?? [], recoveryImports: saved.recoveryImports ?? [] } }
   saveMonitoring(state: MonitoringPortfolioState) { this.storage.setItem(BrowserMonitoringPersistence.key, JSON.stringify(state)) }
 }
 export class MonitoringPortfolioRepository {
@@ -247,4 +293,5 @@ export class MonitoringPortfolioRepository {
   constructor(persistence: MonitoringPersistence) { this.persistence = persistence }
   read(): MonitoringPortfolioState { return this.persistence.load() ?? structuredClone(initialMonitoringPortfolioState) }
   dispatch(command: ScheduleMonitoringReview | SubmitMonitoringEvidence | ReviewMonitoringEvidence | CloseCredentialMonitoring | Parameters<typeof rescheduleMonitoringReview>[1] | Parameters<typeof acknowledgeScheduledReview>[1] | Parameters<typeof decideDueMonitoringReview>[1] | Parameters<typeof reassignUnavailableSupervisor>[1]) { const current = this.read(); const next = 'replacementSupervisor' in command ? reassignUnavailableSupervisor(current, command) : 'nextReviewOn' in command ? decideDueMonitoringReview(current, command) : 'noticeId' in command ? acknowledgeScheduledReview(current, command) : 'reason' in command && 'reviewOn' in command ? rescheduleMonitoringReview(current, command) : 'acceptedEvidence' in command ? closeCredentialMonitoring(current, command) : 'decision' in command ? reviewMonitoringEvidence(current, command) : 'evidenceReference' in command ? submitMonitoringEvidence(current, command) : scheduleMonitoringReview(current, command); if (next !== current) this.persistence.saveMonitoring(next); return next }
+  importRecovery(archive: ComplianceRecoveryArchive, command: Parameters<typeof importComplianceRecovery>[2]) { const current = this.read(); const next = importComplianceRecovery(current, archive, command); if (next !== current) this.persistence.saveMonitoring(next); return next }
 }

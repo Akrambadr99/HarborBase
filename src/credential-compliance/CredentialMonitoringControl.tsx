@@ -2,10 +2,14 @@ import { useRef, useState } from "react";
 import { credentialMonitoringPortfolio } from "./monitoring-portfolio";
 import {
   BrowserMonitoringPersistence,
+  exportComplianceRecovery,
+  parseComplianceRecovery,
+  previewComplianceRecovery,
   MonitoringPortfolioRepository,
   queryMonitoringInterface,
   querySupervisorReviewQueue,
   type MonitoringControlRole,
+  type ComplianceRecoveryArchive,
 } from "./credential-monitoring-domain";
 
 export function CredentialMonitoringControl() {
@@ -20,6 +24,7 @@ export function CredentialMonitoringControl() {
     "Compliance Reviewer",
   );
   const [message, setMessage] = useState("");
+  const [recoveryArchive, setRecoveryArchive] = useState<ComplianceRecoveryArchive | null>(() => { try { const saved = localStorage.getItem('skillorbit:compliance-recovery:v1'); return saved ? parseComplianceRecovery(saved) : null; } catch { return null; } });
   const [evidenceReference, setEvidenceReference] = useState("SUPERVISOR-OBS-18");
   const [reviewRationale, setReviewRationale] = useState("Supervisor verified the observation against the current review.");
   const [rescheduledOn, setRescheduledOn] = useState("2026-10-25");
@@ -29,6 +34,10 @@ export function CredentialMonitoringControl() {
   const [transferCause, setTransferCause] = useState<'unavailable' | 'returned evidence'>('unavailable');
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
+  const recoveryPreview = recoveryArchive ? previewComplianceRecovery(state, recoveryArchive) : null;
+  const captureRecovery = () => { try { const archive = exportComplianceRecovery(state, { id: crypto.randomUUID(), monitoringId: 'MON-AR-18', role, createdOn: '2026-10-29' }); localStorage.setItem('skillorbit:compliance-recovery:v1', JSON.stringify(archive)); setRecoveryArchive(archive); setMessage('Monitoring compliance recovery archive captured; learner progress is separate.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery export failed.'); } queueMicrotask(() => feedback.current?.focus()); };
+  const loadRecovery = async (file: File | undefined) => { if (!file) return; try { setRecoveryArchive(parseComplianceRecovery(await file.text())); setMessage('Compliance recovery archive loaded for review without changing learner progress.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery archive could not be loaded.'); } queueMicrotask(() => feedback.current?.focus()); };
+  const applyRecovery = () => { if (!recoveryArchive) return; try { setState(repository.importRecovery(recoveryArchive, { id: crypto.randomUUID(), expectedRevision: state.revision, role, importedBy: 'Compliance lead', importedOn: '2026-10-29' })); setMessage('Verified compliance history imported; learner progress was preserved.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery import failed.'); } queueMicrotask(() => feedback.current?.focus()); };
   const monitoringView = queryMonitoringInterface(state, "MON-AR-18", role);
   const supervisorQueue = querySupervisorReviewQueue(state, '2026-10-23');
   const currentReview = state.reviewHistory.filter((item) => item.monitoringId === "MON-AR-18").at(-1);
@@ -118,6 +127,7 @@ export function CredentialMonitoringControl() {
           owner {item.owner}
         </p>
       ))}
+      <section aria-label="Monitoring compliance recovery"><h3>Compliance recovery</h3><p>Only review and compliance history can be imported. Current learner progress remains authoritative.</p><button disabled={role !== 'Compliance Lead'} onClick={captureRecovery}>Export monitoring compliance history</button><label>Import compliance archive<input type="file" accept="application/json,.json" onChange={(event) => { void loadRecovery(event.target.files?.[0]); }} /></label>{recoveryArchive && <><p aria-label="Compliance import preview">Archive {recoveryArchive.id} · learner {recoveryArchive.learner} · source revision {recoveryArchive.sourceRevision} · current revision {state.revision} · {recoveryPreview?.ready ? 'verified for import' : 'import blocked'}</p>{recoveryPreview?.reasons.map((reason) => <p role="alert" key={reason}>{reason}</p>)}<a download={`monitoring-${recoveryArchive.monitoringId}-${recoveryArchive.id}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(recoveryArchive, null, 2))}`}>Download compliance archive</a><button disabled={role !== 'Compliance Lead' || !recoveryPreview?.ready} onClick={applyRecovery}>Import verified compliance history</button></>}<ol aria-label="Compliance recovery import history">{state.recoveryImports.map((item) => <li key={item.id}>{item.monitoringId} · {item.archiveId} · {item.importedBy}</li>)}</ol></section>
       {monitoringView?.persona === "learner" ? <p aria-label="Learner monitoring lineage">Monitoring {monitoringView.monitoringPeriod.startsOn} to {monitoringView.monitoringPeriod.endsOn} · {monitoringView.status} · review {monitoringView.upcomingReview ?? "not scheduled"} · successful uses {monitoringView.successfulUses} · evidence {monitoringView.submittedEvidence.map((item) => item.evidenceReference).join(", ") || "pending"}</p> : monitoringView && <p aria-label="Reviewer monitoring lineage">{monitoringView.status} · owner {monitoringView.owner} · previous failures {monitoringView.previousFailures} · review {monitoringView.upcomingReview ?? "not scheduled"} · decision {monitoringView.complianceDecision?.outcome ?? "pending"}</p>}
       {role === 'Supervisor' && <section aria-label="Supervisor review workload"><h3>Evidence review workload</h3><ol>{supervisorQueue.map((item) => <li key={item.monitoringId}>{item.learner} · {item.credential} · monitoring {item.monitoringPeriod.startsOn} to {item.monitoringPeriod.endsOn} · supervisor {item.supervisor} · notice {item.noticeAcknowledged ? "acknowledged" : "pending"} · {item.status} · due {item.dueOn}{item.overdue ? ' · overdue' : ''} · evidence {item.evidenceReference ?? item.requestedEvidence} · previous decision {item.previousDecision ?? 'none'}</li>)}</ol></section>}
       {monitoringView?.persona === 'learner' && <section aria-label="Learner review notices"><h3>Review notices</h3><ol>{monitoringView.notices.map((item) => <li key={item.id}>{item.decision === 'returned' ? 'Correction requested' : 'Evidence accepted'} · {item.evidenceReference} · {item.rationale}</li>)}</ol></section>}
