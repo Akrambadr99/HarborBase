@@ -6,3 +6,23 @@ export function createModerationBatch(state:ModerationState,command:Meta&{expect
 export function approveModerationBatch(state:ModerationState,command:Meta){assert(command.actor.role==='Academic Moderator','Only academic moderators can approve batches.');const next=begin(state,command);assert(next.batch?.status==='draft'&&next.batch.maker!==command.actor.id,'Independent moderation approval is required.');assert(next.batch.scoreFeedVersion===next.scoreFeedVersion,'Scores became stale before moderation approval.');next.batch.status='approved';next.batch.checker=command.actor.id;return finish(next,command,'moderation-batch-approved')}
 export function publishModerationBatch(state:ModerationState,command:Meta){assert(command.actor.role==='Learning Admin','Only learning admins can publish moderation.');const next=begin(state,command);assert(next.batch?.status==='approved'&&next.batch.checker,'An independently approved moderation batch is required.');for(const id of next.batch.attemptIds){const attempt=next.attempts.find((item)=>item.id===id);assert(attempt,`Attempt ${id} no longer exists.`);assert(attempt.version===next.batch.expectedVersions[id]&&attempt.status==='pending',`Attempt ${id} became stale before publication.`);const learner=next.learners.find((item)=>item.id===attempt.learnerId);assert(learner,`Learner ${attempt.learnerId} no longer exists.`);attempt.status='verified';attempt.version+=1;learner.verifiedAttempts+=1;learner.completionEligible=true}next.batch.status='published';next.selectedIds=[];return finish(next,command,'moderation-batch-published')}
 export class ModerationRepository{static key='skillorbit:assessment-moderation:v1';private storage:Pick<Storage,'getItem'|'setItem'>;constructor(storage:Pick<Storage,'getItem'|'setItem'>){this.storage=storage}read(){const raw=this.storage.getItem(ModerationRepository.key);return raw?JSON.parse(raw) as ModerationState:structuredClone(initialModerationState)}commit(expectedRevision:number,operation:(state:ModerationState)=>ModerationState){const state=this.read();assert(state.revision===expectedRevision,'Another session changed moderation. Refresh before retrying.');const next=operation(state);this.storage.setItem(ModerationRepository.key,JSON.stringify(next));return next}}
+
+/** Stable reference to the owning moderation record; queue filters are not source revisions. */
+export interface PublishedAssessmentReference {
+  learnerId: string
+  attemptId: string
+  attemptVersion: number
+  assessmentId: string
+  rulesVersion: number
+  publicationId: string
+}
+export function publishedAssessmentReference(state: ModerationState, attemptId: string): PublishedAssessmentReference {
+  const untrusted: unknown = state
+  if (!untrusted || !Array.isArray(state.attempts) || !Array.isArray(state.learners) || !Array.isArray(state.history)) throw new Error('Authoritative moderation source is unavailable or malformed. Restore it in the owning workflow.')
+  const attempt = state.attempts.find((item) => item.id === attemptId)
+  const learner = state.learners.find((item) => item.id === attempt?.learnerId)
+  const batch = state.batch
+  const publication = state.history.filter((item) => item.action === 'moderation-batch-published').at(-1)
+  if (!attempt || !learner || batch?.status !== 'published' || !batch.checker || batch.checker === batch.maker || !publication || !learner.completionEligible || learner.verifiedAttempts < 1 || attempt.status !== 'verified' || attempt.score < 70 || !Array.isArray(batch.attemptIds) || !batch.attemptIds.includes(attempt.id) || attempt.version !== (batch.expectedVersions[attempt.id] ?? -1) + 1 || attempt.rulesVersion !== batch.rulesVersion) throw new Error('A current independently published passing learner assessment is required.')
+  return { learnerId: learner.id, attemptId: attempt.id, attemptVersion: attempt.version, assessmentId: attempt.assessmentId, rulesVersion: attempt.rulesVersion, publicationId: publication.id }
+}

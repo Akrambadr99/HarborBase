@@ -1,3 +1,4 @@
+import { publishedAssessmentReference, type ModerationState, type PublishedAssessmentReference } from '../assessment-moderation/assessment-moderation'
 import { credentialMonitoringPortfolio, seededCredentialMonitoring, type CredentialMonitoringRecord } from './monitoring-portfolio'
 
 export type MonitoringControlRole = 'Learner' | 'Supervisor' | 'Compliance Reviewer' | 'Compliance Lead'
@@ -15,20 +16,72 @@ export interface ReviewNoticeAcknowledgement { id: string; noticeId: string; rev
 export interface DueReviewDecision { id: string; monitoringId: string; reviewId: string; outcome: 'completed' | 'deferred' | 'missed'; evidenceSubmissionId: string | null; supervisorReviewId: string | null; learnerAcknowledgementId: string | null; supervisorAcknowledgementId: string | null; reason: string; nextReviewId: string | null; decidedBy: string; decidedOn: string; immutable: true }
 export interface SupervisorAvailabilityException { id: string; monitoringId: string; reviewId: string; nextReviewId: string; unavailableSupervisor: string; replacementSupervisor: string; cause?: 'unavailable' | 'returned evidence'; returnedDecisionId?: string; reason: string; approvalReference: string; approvedBy: string; previousReviewOn: string; revisedReviewOn: string; decidedOn: string; immutable: true }
 export interface MonitoringPortfolioState { revision: number; records: CredentialMonitoringRecord[]; reviewHistory: MonitoringReview[]; evidenceSubmissions: MonitoringEvidenceSubmission[]; supervisorReviews: SupervisorEvidenceReview[]; learnerNotices: LearnerMonitoringNotice[]; scheduledNotices: ScheduledReviewNotice[]; noticeAcknowledgements: ReviewNoticeAcknowledgement[]; dueReviewDecisions: DueReviewDecision[]; supervisorExceptions: SupervisorAvailabilityException[]; closures: MonitoringClosure[] }
-export interface ComplianceRecoveryArchive { schemaVersion: 1; id: string; monitoringId: string; learner: string; credential: string; sourceRevision: number; createdOn: string; progressAtCapture: { successfulUses: number; failedUses: number; evidencePending: number }; history: Pick<MonitoringPortfolioState, 'reviewHistory' | 'evidenceSubmissions' | 'supervisorReviews' | 'learnerNotices' | 'scheduledNotices' | 'noticeAcknowledgements' | 'dueReviewDecisions' | 'supervisorExceptions' | 'closures' | 'supervisedOutcomes'> }
+export interface ComplianceRecoveryArchive { learnerId?: string; credentialId?: string; assessmentSource?: PublishedAssessmentReference; schemaVersion: 1; id: string; monitoringId: string; learner: string; credential: string; sourceRevision: number; createdOn: string; progressAtCapture: { successfulUses: number; failedUses: number; evidencePending: number }; history: Pick<MonitoringPortfolioState, 'reviewHistory' | 'evidenceSubmissions' | 'supervisorReviews' | 'learnerNotices' | 'scheduledNotices' | 'noticeAcknowledgements' | 'dueReviewDecisions' | 'supervisorExceptions' | 'closures' | 'supervisedOutcomes' | 'assessmentEnrollments'> }
 export interface ComplianceRecoveryImport { id: string; archiveId: string; monitoringId: string; importedBy: string; importedOn: string; immutable: true }
-export interface MonitoringPortfolioState { recoveryImports: ComplianceRecoveryImport[]; supervisedOutcomes: SupervisedMonitoringOutcome[] }
-export const monitoringOwnerPolicy = { maximumHighRiskReviews: 2, maximumActiveSupervisorReviews: 2 } as const
-export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], learnerNotices: [], scheduledNotices: [], noticeAcknowledgements: [], dueReviewDecisions: [], supervisorExceptions: [], closures: [], recoveryImports: [], supervisedOutcomes: [] }
 
-const complianceHistoryKeys = ['reviewHistory', 'evidenceSubmissions', 'supervisorReviews', 'learnerNotices', 'scheduledNotices', 'noticeAcknowledgements', 'dueReviewDecisions', 'supervisorExceptions', 'closures', 'supervisedOutcomes'] as const
+export interface AssessmentMonitoringEnrollment {
+  id: string
+  monitoringId: string
+  learnerId: string
+  credentialId: string
+  evidenceReference: string
+  enrolledBy: string
+  enrolledOn: string
+  immutable: true
+}
+interface RegisterAssessmentMonitoring {
+  id: string
+  expectedRevision: number
+  expectedModerationRevision: number
+  role: MonitoringControlRole
+  attemptId: string
+  credentialId: string
+  startsOn: string
+  endsOn: string
+  evidenceReference: string
+  enrolledBy: string
+}
+function sameAssessmentReference(first: PublishedAssessmentReference | undefined, second: PublishedAssessmentReference) {
+  return first?.learnerId === second.learnerId && first.attemptId === second.attemptId && first.attemptVersion === second.attemptVersion && first.assessmentId === second.assessmentId && first.rulesVersion === second.rulesVersion && first.publicationId === second.publicationId
+}
+/** New monitoring is explicitly enrolled; legacy names never become inferred learner IDs. */
+export function registerAssessmentMonitoring(state: MonitoringPortfolioState, moderation: ModerationState, command: RegisterAssessmentMonitoring) {
+  if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can enroll a moderated credential.')
+  const source = publishedAssessmentReference(moderation, command.attemptId)
+  if (state.revision !== command.expectedRevision || moderation.revision !== command.expectedModerationRevision) throw new Error('Monitoring or assessment source changed. Refresh sources; entered enrollment stays intact.')
+  const validDate = (value: string) => /^20\d{2}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value
+  if (!command.id.trim() || !/^CRED-[A-Z0-9-]{3,40}$/.test(command.credentialId) || !command.evidenceReference.trim() || !command.enrolledBy.trim() || !validDate(command.startsOn) || !validDate(command.endsOn) || command.endsOn <= command.startsOn) throw new Error('A durable credential ID, attribution, enrollment evidence and valid monitoring window are required.')
+  if (state.assessmentEnrollments.some((item) => item.id === command.id) || state.records.some((item) => item.credentialId === command.credentialId)) throw new Error('Credential enrollment identity is already registered. No duplicate learner record was created.')
+  const monitoringId = 'MON-' + command.credentialId
+  const next = structuredClone(state)
+  next.records.push({ monitoringId, learnerId: source.learnerId, credentialId: command.credentialId, assessmentSource: source, learner: source.learnerId, credential: command.credentialId, startsOn: command.startsOn, endsOn: command.endsOn, successfulUses: 0, failedUses: 0, evidencePending: 1, owner: 'Credential council' })
+  next.assessmentEnrollments.push({ id: command.id, monitoringId, learnerId: source.learnerId, credentialId: command.credentialId, evidenceReference: command.evidenceReference.trim(), enrolledBy: command.enrolledBy.trim(), enrolledOn: command.startsOn, immutable: true })
+  next.revision += 1
+  return next
+}
+function requireCurrentAssessment(state: MonitoringPortfolioState, monitoringId: string, readModeration?: () => ModerationState) {
+  const record = state.records.find((item) => item.monitoringId === monitoringId)
+  const source = record?.assessmentSource
+  if (!source) return
+  const enrollment = state.assessmentEnrollments.filter((item) => item.monitoringId === monitoringId)
+  if (record.learnerId !== source.learnerId || record.learner !== source.learnerId || record.credentialId !== record.credential || enrollment.length !== 1 || enrollment[0]?.learnerId !== record.learnerId || enrollment[0].credentialId !== record.credentialId) throw new Error('Saved monitoring learner or credential identity lacks its authoritative enrollment.')
+  if (!readModeration) throw new Error('Authoritative assessment source is unavailable. Existing monitoring evidence was preserved.')
+  const current = publishedAssessmentReference(readModeration(), source.attemptId)
+  if (!sameAssessmentReference(current, source)) throw new Error('Assessment source changed after credential enrollment. Reconcile the source before accepting outcomes or closing monitoring.')
+}
+
+export interface MonitoringPortfolioState { assessmentEnrollments: AssessmentMonitoringEnrollment[]; recoveryImports: ComplianceRecoveryImport[]; supervisedOutcomes: SupervisedMonitoringOutcome[] }
+export const monitoringOwnerPolicy = { maximumHighRiskReviews: 2, maximumActiveSupervisorReviews: 2 } as const
+export const initialMonitoringPortfolioState: MonitoringPortfolioState = { revision: 0, records: structuredClone(seededCredentialMonitoring), reviewHistory: [], evidenceSubmissions: [], supervisorReviews: [], learnerNotices: [], scheduledNotices: [], noticeAcknowledgements: [], dueReviewDecisions: [], supervisorExceptions: [], closures: [], recoveryImports: [], supervisedOutcomes: [], assessmentEnrollments: [] }
+
+const complianceHistoryKeys = ['reviewHistory', 'evidenceSubmissions', 'supervisorReviews', 'learnerNotices', 'scheduledNotices', 'noticeAcknowledgements', 'dueReviewDecisions', 'supervisorExceptions', 'closures', 'supervisedOutcomes', 'assessmentEnrollments'] as const
 export function exportComplianceRecovery(state: MonitoringPortfolioState, command: { id: string; monitoringId: string; role: MonitoringControlRole; createdOn: string }): ComplianceRecoveryArchive {
   if (command.role !== 'Compliance Lead') throw new Error('Only the compliance lead can export monitoring recovery evidence.')
   const record = state.records.find((item) => item.monitoringId === command.monitoringId)
   if (!record || !command.id.trim() || !/^20\d{2}-\d{2}-\d{2}$/.test(command.createdOn)) throw new Error('Monitoring identity, archive ID, and business date are required.')
   const noticeIds = new Set(state.scheduledNotices.filter((item) => item.monitoringId === command.monitoringId).map((item) => item.id))
   const history = Object.fromEntries(complianceHistoryKeys.map((key) => [key, structuredClone(key === 'noticeAcknowledgements' ? state.noticeAcknowledgements.filter((item) => noticeIds.has(item.noticeId)) : state[key].filter((item) => item.monitoringId === command.monitoringId))])) as unknown as ComplianceRecoveryArchive['history']
-  return { schemaVersion: 1, id: command.id, monitoringId: record.monitoringId, learner: record.learner, credential: record.credential, sourceRevision: state.revision, createdOn: command.createdOn, progressAtCapture: { successfulUses: record.successfulUses, failedUses: record.failedUses, evidencePending: record.evidencePending }, history }
+  return { ...(record.assessmentSource ? { learnerId: record.assessmentSource.learnerId, credentialId: record.credentialId ?? '', assessmentSource: structuredClone(record.assessmentSource) } : {}), schemaVersion: 1, id: command.id, monitoringId: record.monitoringId, learner: record.learner, credential: record.credential, sourceRevision: state.revision, createdOn: command.createdOn, progressAtCapture: { successfulUses: record.successfulUses, failedUses: record.failedUses, evidencePending: record.evidencePending }, history }
 }
 export function parseComplianceRecovery(raw: string): ComplianceRecoveryArchive {
   const parsed: unknown = JSON.parse(raw)
@@ -36,7 +89,7 @@ export function parseComplianceRecovery(raw: string): ComplianceRecoveryArchive 
   const archive = parsed as Partial<ComplianceRecoveryArchive>
   if (archive.schemaVersion !== 1) throw new Error('Unsupported monitoring recovery archive schema.')
   const savedHistory = archive.history as Partial<ComplianceRecoveryArchive['history']> | undefined
-  if (savedHistory) savedHistory.supervisedOutcomes ??= []
+  if (savedHistory) { savedHistory.supervisedOutcomes ??= []; savedHistory.assessmentEnrollments ??= [] }
   if (!archive.id || !archive.monitoringId || !archive.learner || !archive.history || complianceHistoryKeys.some((key) => !Array.isArray(archive.history?.[key]))) throw new Error('Monitoring recovery archive is structurally incomplete.')
   return archive as ComplianceRecoveryArchive
 }
@@ -45,6 +98,8 @@ export function previewComplianceRecovery(state: MonitoringPortfolioState, archi
   const record = state.records.find((item) => item.monitoringId === archive.monitoringId)
   if ((archive as { schemaVersion: number }).schemaVersion !== 1) reasons.push('Unsupported archive schema.')
   if (!record?.learner || record.learner !== archive.learner || record.credential !== archive.credential) reasons.push('Learner or credential identity does not match the authoritative monitoring record.')
+  if (record?.assessmentSource && (archive.learnerId !== record.learnerId || archive.credentialId !== record.credentialId || !sameAssessmentReference(archive.assessmentSource, record.assessmentSource))) reasons.push('Authoritative learner, credential or assessment reference does not match the enrolled monitoring record.')
+  if (archive.history.assessmentEnrollments.some((item) => item.learnerId !== record?.learnerId || item.credentialId !== record.credentialId || !record.assessmentSource)) reasons.push('Enrollment history does not belong to the authoritative credential identity.')
   if (state.revision !== archive.sourceRevision) reasons.push('Monitoring state changed after export; current learner progress and compliance decisions cannot be overwritten.')
   if (state.recoveryImports.some((item) => item.archiveId === archive.id)) reasons.push('Archive already imported.')
   const reviews = archive.history.reviewHistory
@@ -272,6 +327,7 @@ export function closeCredentialMonitoring(state: MonitoringPortfolioState, comma
     if (decision?.decision !== 'accepted' || ((review.assignedSupervisor || state.reviewHistory.filter((item) => item.monitoringId === command.monitoringId).length > 1) && decision.reviewId !== review.id) || !command.acceptedEvidence.includes(latest?.evidenceReference ?? '')) throw new Error('Current learner evidence requires an accepted supervisor review before compliance closure.')
   }
   const observed = state.supervisedOutcomes.filter((item) => item.monitoringId === record.monitoringId).at(-1)
+  if (record.assessmentSource && !observed) throw new Error('Assessment-linked closure needs actual supervised outcomes for the enrolled learner.')
   if (observed) {
     const latest = state.evidenceSubmissions.filter((item) => item.monitoringId === record.monitoringId).at(-1)
     const decision = state.supervisorReviews.filter((item) => item.submissionId === latest?.id).at(-1)
@@ -372,13 +428,32 @@ export class BrowserMonitoringPersistence implements MonitoringPersistence {
   static key = 'skillorbit:monitoring-portfolio:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], learnerNotices: saved.learnerNotices ?? [], scheduledNotices: saved.scheduledNotices ?? [], noticeAcknowledgements: saved.noticeAcknowledgements ?? [], dueReviewDecisions: saved.dueReviewDecisions ?? [], supervisorExceptions: saved.supervisorExceptions ?? [], closures: saved.closures ?? [], recoveryImports: saved.recoveryImports ?? [], supervisedOutcomes: saved.supervisedOutcomes ?? [] } }
+  load() { const raw = this.storage.getItem(BrowserMonitoringPersistence.key); if (!raw) return null; const saved = JSON.parse(raw) as Partial<MonitoringPortfolioState>; return { ...(saved as MonitoringPortfolioState), reviewHistory: saved.reviewHistory ?? [], evidenceSubmissions: saved.evidenceSubmissions ?? [], supervisorReviews: saved.supervisorReviews ?? [], learnerNotices: saved.learnerNotices ?? [], scheduledNotices: saved.scheduledNotices ?? [], noticeAcknowledgements: saved.noticeAcknowledgements ?? [], dueReviewDecisions: saved.dueReviewDecisions ?? [], supervisorExceptions: saved.supervisorExceptions ?? [], closures: saved.closures ?? [], recoveryImports: saved.recoveryImports ?? [], supervisedOutcomes: saved.supervisedOutcomes ?? [], assessmentEnrollments: saved.assessmentEnrollments ?? [] } }
   saveMonitoring(state: MonitoringPortfolioState) { this.storage.setItem(BrowserMonitoringPersistence.key, JSON.stringify(state)) }
 }
 export class MonitoringPortfolioRepository {
   private readonly persistence: MonitoringPersistence
-  constructor(persistence: MonitoringPersistence) { this.persistence = persistence }
+  private readonly readModeration: (() => ModerationState) | undefined
+  constructor(persistence: MonitoringPersistence, readModeration?: () => ModerationState) { this.persistence = persistence; this.readModeration = readModeration }
   read(): MonitoringPortfolioState { return this.persistence.load() ?? structuredClone(initialMonitoringPortfolioState) }
-  dispatch(command: Parameters<typeof recordSupervisedMonitoringOutcome>[1] | ScheduleMonitoringReview | SubmitMonitoringEvidence | ReviewMonitoringEvidence | CloseCredentialMonitoring | Parameters<typeof rescheduleMonitoringReview>[1] | Parameters<typeof acknowledgeScheduledReview>[1] | Parameters<typeof decideDueMonitoringReview>[1] | Parameters<typeof reassignUnavailableSupervisor>[1] | RevalidateCarriedEvidence | Parameters<typeof scheduleDueMonitoringReview>[1]) { const current = this.read(); const next = 'supervisedOutcome' in command ? recordSupervisedMonitoringOutcome(current, command) : 'routineReview' in command ? scheduleDueMonitoringReview(current, command) : 'carryForwardReview' in command ? revalidateCarriedMonitoringEvidence(current, command) : 'replacementSupervisor' in command ? reassignUnavailableSupervisor(current, command) : 'nextReviewOn' in command ? decideDueMonitoringReview(current, command) : 'noticeId' in command ? acknowledgeScheduledReview(current, command) : 'reason' in command && 'reviewOn' in command ? rescheduleMonitoringReview(current, command) : 'acceptedEvidence' in command ? closeCredentialMonitoring(current, command) : 'decision' in command ? reviewMonitoringEvidence(current, command) : 'evidenceReference' in command ? submitMonitoringEvidence(current, command) : scheduleMonitoringReview(current, command); if (next !== current) this.persistence.saveMonitoring(next); return next }
+  dispatch(command: Parameters<typeof recordSupervisedMonitoringOutcome>[1] | ScheduleMonitoringReview | SubmitMonitoringEvidence | ReviewMonitoringEvidence | CloseCredentialMonitoring | Parameters<typeof rescheduleMonitoringReview>[1] | Parameters<typeof acknowledgeScheduledReview>[1] | Parameters<typeof decideDueMonitoringReview>[1] | Parameters<typeof reassignUnavailableSupervisor>[1] | RevalidateCarriedEvidence | Parameters<typeof scheduleDueMonitoringReview>[1]) {
+    const current = this.read()
+    const consequential = 'supervisedOutcome' in command || 'acceptedEvidence' in command || 'decision' in command || ('outcome' in command && command.outcome === 'completed')
+    if (consequential && 'monitoringId' in command) requireCurrentAssessment(current, command.monitoringId, this.readModeration)
+    const next = 'supervisedOutcome' in command ? recordSupervisedMonitoringOutcome(current, command) : 'routineReview' in command ? scheduleDueMonitoringReview(current, command) : 'carryForwardReview' in command ? revalidateCarriedMonitoringEvidence(current, command) : 'replacementSupervisor' in command ? reassignUnavailableSupervisor(current, command) : 'nextReviewOn' in command ? decideDueMonitoringReview(current, command) : 'noticeId' in command ? acknowledgeScheduledReview(current, command) : 'reason' in command && 'reviewOn' in command ? rescheduleMonitoringReview(current, command) : 'acceptedEvidence' in command ? closeCredentialMonitoring(current, command) : 'decision' in command ? reviewMonitoringEvidence(current, command) : 'evidenceReference' in command ? submitMonitoringEvidence(current, command) : scheduleMonitoringReview(current, command)
+    if (next !== current) {
+      if (consequential && 'monitoringId' in command) requireCurrentAssessment(next, command.monitoringId, this.readModeration)
+      this.persistence.saveMonitoring(next)
+    }
+    return next
+  }
+  registerAssessment(command: RegisterAssessmentMonitoring) {
+    if (!this.readModeration) throw new Error('Authoritative assessment source is unavailable.')
+    const current = this.read(), source = this.readModeration()
+    const next = registerAssessmentMonitoring(current, source, command)
+    if (this.read().revision !== current.revision || this.readModeration().revision !== source.revision) throw new Error('Another session changed enrollment sources before save. Refresh and retry.')
+    this.persistence.saveMonitoring(next)
+    return next
+  }
   importRecovery(archive: ComplianceRecoveryArchive, command: Parameters<typeof importComplianceRecovery>[2]) { const current = this.read(); const next = importComplianceRecovery(current, archive, command); if (next !== current) this.persistence.saveMonitoring(next); return next }
 }

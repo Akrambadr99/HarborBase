@@ -1,9 +1,10 @@
+import { applyScoreRefresh, approveModerationBatch, changeAttemptFilter, createModerationBatch, initialModerationState, publishModerationBatch, toggleModerationAttempt, ModerationRepository, type ModerationState } from '../assessment-moderation/assessment-moderation'
 import { createElement } from 'react'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CredentialMonitoringControl } from './CredentialMonitoringControl'
 import { describe, expect, it } from 'vitest'
-import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, exportComplianceRecovery, parseComplianceRecovery, previewComplianceRecovery, importComplianceRecovery, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, recordSupervisedMonitoringOutcome, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleDueMonitoringReview, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
+import { registerAssessmentMonitoring, acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, exportComplianceRecovery, parseComplianceRecovery, previewComplianceRecovery, importComplianceRecovery, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, recordSupervisedMonitoringOutcome, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleDueMonitoringReview, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
 
 const command = { id: 'monitor-1', expectedRevision: 0, role: 'Compliance Lead' as const, monitoringId: 'MON-AR-18', owner: 'Senior compliance reviewer', reviewOn: '2026-10-21', asOf: '2026-10-20', evidenceRequested: 'Provide supervisor observation for both failed credential uses.' }
 it('reassigns an unavailable supervisor without losing learner evidence or previous notices', () => {
@@ -340,4 +341,75 @@ it('rejects malformed persisted outcome counts and altered review attribution at
     expect(() => closeCredentialMonitoring(changed, { id: 'forged-close', expectedRevision: changed.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, acceptedEvidence: ['OBS-REAL-18'], supervisorApproval: 'actual-outcome', complianceApproval: 'forged-close', successfulUses: 7, closedBy: 'Compliance lead', closedOn: '2026-10-26' })).toThrow('Saved supervised outcome')
     expect(changed.closures).toEqual([])
   }
+})
+
+function publishedLearnerAssessments() {
+  const actor = (id: string, role: 'Assessment Coordinator' | 'Scoring Analyst' | 'Academic Moderator' | 'Learning Admin') => ({ id, role })
+  let source = toggleModerationAttempt(initialModerationState, { id: 'select-one', expectedRevision: 0, actor: actor('coordinator-a', 'Assessment Coordinator'), attemptId: 'ATTEMPT-81' })
+  source = toggleModerationAttempt(source, { id: 'select-two', expectedRevision: source.revision, actor: actor('coordinator-a', 'Assessment Coordinator'), attemptId: 'ATTEMPT-82' })
+  source = applyScoreRefresh(source, { id: 'score-source', expectedRevision: source.revision, actor: actor('scoring-a', 'Scoring Analyst'), capturedQueueVersion: source.queueVersion, responseVersion: 8, attemptVersions: { 'ATTEMPT-81': 4, 'ATTEMPT-82': 6, 'ATTEMPT-83': 2 } })
+  source = createModerationBatch(source, { id: 'make-source', expectedRevision: source.revision, actor: actor('coordinator-a', 'Assessment Coordinator'), expectedVersions: { 'ATTEMPT-81': 4, 'ATTEMPT-82': 6 } })
+  source = approveModerationBatch(source, { id: 'check-source', expectedRevision: source.revision, actor: actor('moderator-a', 'Academic Moderator') })
+  return publishModerationBatch(source, { id: 'publish-source', expectedRevision: source.revision, actor: actor('admin-a', 'Learning Admin') })
+}
+const enrollmentCommand = { id: 'enroll-81', expectedRevision: 0, expectedModerationRevision: 6, role: 'Compliance Lead' as const, attemptId: 'ATTEMPT-81', credentialId: 'CRED-ASSESSOR-81', startsOn: '2026-10-20', endsOn: '2026-10-25', evidenceReference: 'ENROLLMENT-81-SOURCE', enrolledBy: 'Compliance lead' }
+it('enrolls a new credential from real published learner identity without joining legacy names', () => {
+  const source = publishedLearnerAssessments(), next = registerAssessmentMonitoring(initialMonitoringPortfolioState, source, enrollmentCommand)
+  expect(next.records.at(-1)).toMatchObject({ monitoringId: 'MON-CRED-ASSESSOR-81', learnerId: 'LEARNER-81', credentialId: 'CRED-ASSESSOR-81', assessmentSource: { attemptId: 'ATTEMPT-81', attemptVersion: 5, publicationId: 'publish-source', assessmentId: 'ASSESSMENT-R3', rulesVersion: 3 } })
+  expect(next.records.slice(0, -1)).toEqual(initialMonitoringPortfolioState.records)
+  expect(next.assessmentEnrollments[0]).toMatchObject({ learnerId: 'LEARNER-81', evidenceReference: enrollmentCommand.evidenceReference, immutable: true })
+  expect(source).toEqual(publishedLearnerAssessments())
+})
+it('rejects unpublished stale duplicate and unauthorized assessment enrollment without partial records', () => {
+  const source = publishedLearnerAssessments(), before = structuredClone(initialMonitoringPortfolioState)
+  expect(() => registerAssessmentMonitoring(before, initialModerationState, { ...enrollmentCommand, expectedModerationRevision: 0 })).toThrow('published passing')
+  expect(() => registerAssessmentMonitoring(before, source, { ...enrollmentCommand, expectedModerationRevision: 0 })).toThrow('source changed')
+  expect(() => registerAssessmentMonitoring(before, source, { ...enrollmentCommand, role: 'Learner' })).toThrow('compliance lead')
+  expect(() => registerAssessmentMonitoring(before, source, { ...enrollmentCommand, endsOn: '2026-02-30' })).toThrow('valid monitoring window')
+  const enrolled = registerAssessmentMonitoring(before, source, enrollmentCommand)
+  expect(() => registerAssessmentMonitoring(enrolled, source, { ...enrollmentCommand, id: 'duplicate', expectedRevision: enrolled.revision })).toThrow('already registered')
+  expect(before).toEqual(initialMonitoringPortfolioState)
+})
+it('blocks changed authoritative assessment outcomes before consequential monitoring mutation', () => {
+  let source: ModerationState = publishedLearnerAssessments()
+  let saved = registerAssessmentMonitoring(initialMonitoringPortfolioState, source, enrollmentCommand)
+  const repository = new MonitoringPortfolioRepository({ load: () => saved, saveMonitoring: (value) => { saved = value } }, () => source)
+  const before = structuredClone(saved)
+  const attempt = source.attempts[0]; if (!attempt) throw new Error('Source attempt missing.')
+  attempt.version += 1
+  expect(() => repository.dispatch({ id: 'outcome-conflict', expectedRevision: saved.revision, role: 'Supervisor', monitoringId: 'MON-CRED-ASSESSOR-81', supervisedOutcome: true, successfulUses: 5, evidenceReference: 'CURRENT-USE', rationale: 'Supervised observation is attributed to the current assessment learner.', recordedBy: 'Monitoring supervisor', recordedOn: '2026-10-25' })).toThrow('published passing')
+  expect(saved).toEqual(before)
+  source = publishedLearnerAssessments()
+  source = changeAttemptFilter(source, { id: 'source-filter', expectedRevision: source.revision, actor: { id: 'coordinator-a', role: 'Assessment Coordinator' }, filter: 'all' })
+  expect(() => repository.dispatch({ id: 'outcome-current', expectedRevision: saved.revision, role: 'Supervisor', monitoringId: 'MON-CRED-ASSESSOR-81', supervisedOutcome: true, successfulUses: 5, evidenceReference: 'CURRENT-USE', rationale: 'Supervised observation is attributed to the current assessment learner.', recordedBy: 'Monitoring supervisor', recordedOn: '2026-10-25' })).toThrow('open monitoring cycle')
+  expect(saved).toEqual(before)
+})
+it('validates enrolled archive identity while loading older history without enrollment arrays', () => {
+  const source = publishedLearnerAssessments(), state = registerAssessmentMonitoring(initialMonitoringPortfolioState, source, enrollmentCommand)
+  const archive = exportComplianceRecovery(state, { id: 'assessment-archive', monitoringId: 'MON-CRED-ASSESSOR-81', role: 'Compliance Lead', createdOn: '2026-10-26' })
+  expect(previewComplianceRecovery(state, parseComplianceRecovery(JSON.stringify(archive))).ready).toBe(true)
+  const pinned = archive.assessmentSource; if (!pinned) throw new Error('Archive source missing.')
+  expect(previewComplianceRecovery(state, { ...archive, assessmentSource: { publicationId: pinned.publicationId, rulesVersion: pinned.rulesVersion, assessmentId: pinned.assessmentId, attemptVersion: pinned.attemptVersion, attemptId: pinned.attemptId, learnerId: pinned.learnerId } }).ready).toBe(true)
+  expect(previewComplianceRecovery(state, { ...archive, learnerId: 'LEARNER-82' }).ready).toBe(false)
+  const legacy = exportComplianceRecovery(initialMonitoringPortfolioState, { id: 'legacy-enrollment', monitoringId: 'MON-AR-18', role: 'Compliance Lead', createdOn: '2026-10-26' })
+  const parsed = parseComplianceRecovery(JSON.stringify({ ...legacy, history: { ...legacy.history, assessmentEnrollments: undefined } }))
+  expect(parsed.history.assessmentEnrollments).toEqual([])
+  expect(previewComplianceRecovery(initialMonitoringPortfolioState, parsed).ready).toBe(true)
+})
+it('preserves enrollment input through stale assessment refresh and creates only the selected learner', async () => {
+  cleanup(); localStorage.clear(); const user = userEvent.setup(); const source = publishedLearnerAssessments()
+  localStorage.setItem(ModerationRepository.key, JSON.stringify(source)); render(createElement(CredentialMonitoringControl))
+  await user.selectOptions(screen.getByLabelText('Monitoring role'), 'Compliance Lead')
+  await user.click(screen.getByText('Enroll a verified assessment learner'))
+  await user.type(screen.getByLabelText('Enrollment credential ID'), enrollmentCommand.credentialId)
+  await user.type(screen.getByLabelText('Enrollment evidence'), enrollmentCommand.evidenceReference)
+  localStorage.setItem(ModerationRepository.key, JSON.stringify({ ...source, revision: source.revision + 1 }))
+  await user.click(screen.getByRole('button', { name: 'Enroll verified credential monitoring' }))
+  expect(screen.getByRole('status')).toHaveTextContent('source changed')
+  expect(screen.getByLabelText('Enrollment credential ID')).toHaveValue(enrollmentCommand.credentialId)
+  await user.click(screen.getByRole('button', { name: 'Refresh assessment sources' }))
+  await user.click(screen.getByRole('button', { name: 'Enroll verified credential monitoring' }))
+  expect(screen.getByLabelText('Authoritative assessment enrollment')).toHaveTextContent('Learner LEARNER-81')
+  expect(new BrowserMonitoringPersistence(localStorage).load()?.records.slice(0, -1)).toEqual(initialMonitoringPortfolioState.records)
+  cleanup(); localStorage.clear()
 })

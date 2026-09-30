@@ -1,4 +1,8 @@
+import type { PublishedAssessmentReference } from '../assessment-moderation/assessment-moderation'
 export interface CredentialMonitoringRecord {
+  learnerId?: string
+  credentialId?: string
+  assessmentSource?: PublishedAssessmentReference
   monitoringId: string
   learner: string
   credential: string

@@ -243,3 +243,38 @@ test('actual supervised credential outcomes govern independent monitoring closur
   await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 7');
   await page.reload(); await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 7');
 });
+
+
+test('published assessment learner enrolls and completes independently reviewed credential monitoring', async ({ page }) => {
+  await page.goto('/assessment-moderation');
+  await page.getByLabel('Select ATTEMPT-81').check(); await page.getByLabel('Select ATTEMPT-82').check();
+  await page.getByLabel('Moderation role').selectOption('Scoring Analyst'); await page.getByRole('button', { name: 'Refresh moderation scores' }).click();
+  await page.getByLabel('Moderation role').selectOption('Assessment Coordinator'); await page.getByRole('button', { name: 'Create moderation batch' }).click();
+  await page.getByLabel('Moderation role').selectOption('Academic Moderator'); await page.getByRole('button', { name: 'Approve moderation batch' }).click();
+  await page.getByLabel('Moderation role').selectOption('Learning Admin'); await page.getByRole('button', { name: 'Publish moderation batch' }).click();
+  await expect(page.getByRole('status')).toContainText('published');
+  await page.goto('/credential-compliance'); const role = page.getByLabel('Monitoring role'); await role.selectOption('Compliance Lead');
+  await page.getByRole('button', { name: 'Schedule high-risk monitoring review' }).click();
+  const beforeStorage = await page.context().storageState(); const beforeRaw = beforeStorage.origins.flatMap((origin) => origin.localStorage).find((item) => item.name === 'skillorbit:monitoring-portfolio:v3')?.value;
+  const originalRecords = (JSON.parse(beforeRaw ?? '{}') as { records: { monitoringId: string }[] }).records;
+  await page.getByText('Enroll a verified assessment learner', { exact: true }).click();
+  await page.getByLabel('Enrollment credential ID').fill('CRED-ASSESSOR-81'); await page.getByLabel('Enrollment evidence').fill('COUNCIL-ENROLLMENT-81');
+  await page.getByRole('button', { name: 'Enroll verified credential monitoring' }).click();
+  await expect(page.getByLabel('Authoritative assessment enrollment')).toContainText('Learner LEARNER-81');
+  await expect(page.getByLabel('Authoritative assessment enrollment')).toContainText('ATTEMPT-81 v5');
+  await page.getByRole('button', { name: 'Assign due monitoring review' }).click();
+  await role.selectOption('Learner'); await page.getByRole('button', { name: 'Acknowledge current review notice' }).click();
+  await page.getByLabel('Monitoring evidence reference').fill('LEARNER-81-SUPERVISED-LOG'); await page.getByRole('button', { name: 'Submit learner monitoring evidence' }).click();
+  await role.selectOption('Supervisor'); await page.getByRole('button', { name: 'Acknowledge current review notice' }).click();
+  await page.getByRole('button', { name: 'Accept monitoring evidence' }).click();
+  await page.getByLabel('Observed outcome evidence').fill('ASSESSED-USE-LOG-81'); await page.getByRole('button', { name: 'Record supervised credential outcome' }).click();
+  await role.selectOption('Compliance Lead'); await page.getByRole('button', { name: 'Complete due review' }).click();
+  await page.getByRole('button', { name: 'Complete governed credential monitoring' }).click();
+  await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 5');
+  await page.reload(); await page.getByLabel('Active monitoring record').selectOption('MON-CRED-ASSESSOR-81');
+  await expect(page.getByLabel('Authoritative assessment enrollment')).toContainText('CRED-ASSESSOR-81');
+  await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 5');
+  const saved = await page.context().storageState(); const raw = saved.origins.flatMap((origin) => origin.localStorage).find((item) => item.name === 'skillorbit:monitoring-portfolio:v3')?.value;
+  const portfolio = JSON.parse(raw ?? '{}') as { records: { monitoringId: string; successfulUses: number }[] };
+  expect(portfolio.records.filter((item) => originalRecords.some((original) => original.monitoringId === item.monitoringId))).toEqual(originalRecords);
+});

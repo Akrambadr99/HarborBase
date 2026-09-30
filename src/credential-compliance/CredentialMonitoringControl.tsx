@@ -1,3 +1,4 @@
+import { ModerationRepository, type ModerationState } from '../assessment-moderation/assessment-moderation';
 import { useEffect, useRef, useState } from "react";
 import { credentialMonitoringPortfolio } from "./monitoring-portfolio";
 import {
@@ -12,13 +13,19 @@ import {
   type ComplianceRecoveryArchive,
 } from "./credential-monitoring-domain";
 
+function readAssessmentSources(): ModerationState | null {
+  try { const source = new ModerationRepository(localStorage).read(); return Array.isArray(source.attempts) && Array.isArray(source.learners) && Array.isArray(source.history) ? source : null; } catch { return null; }
+}
 export function CredentialMonitoringControl() {
   const [repository] = useState(
     () =>
       new MonitoringPortfolioRepository(
         new BrowserMonitoringPersistence(localStorage),
+        () => new ModerationRepository(localStorage).read(),
       ),
   );
+  const [assessmentSource, setAssessmentSource] = useState(readAssessmentSources);
+  const [enrollment, setEnrollment] = useState({ attemptId: 'ATTEMPT-81', credentialId: '', startsOn: '2026-10-20', endsOn: '2026-10-25', evidenceReference: '' });
   const [state, setState] = useState(() => repository.read());
   const [role, setRole] = useState<MonitoringControlRole>(
     "Compliance Reviewer",
@@ -30,7 +37,7 @@ export function CredentialMonitoringControl() {
   const selectedRecord = state.records.find((item) => item.monitoringId === monitoringId);
   const [message, setMessage] = useState("");
   const [recoveryArchive, setRecoveryArchive] = useState<ComplianceRecoveryArchive | null>(() => { try { const saved = localStorage.getItem('skillorbit:compliance-recovery:v1'); return saved ? parseComplianceRecovery(saved) : null; } catch { return null; } });
-  const evidenceReference = inputByRecord[monitoringId]?.evidence ?? "SUPERVISOR-OBS-18";
+  const evidenceReference = inputByRecord[monitoringId]?.evidence ?? (selectedRecord?.learnerId ? "" : "SUPERVISOR-OBS-18");
   const reviewRationale = inputByRecord[monitoringId]?.rationale ?? "Supervisor verified the observation against the current review.";
   const [rescheduledOn, setRescheduledOn] = useState("2026-10-25");
   const [dueReviewReason, setDueReviewReason] = useState("Supervisor evidence and acknowledgement require an extended review window.");
@@ -42,6 +49,14 @@ export function CredentialMonitoringControl() {
   const feedback = useRef<HTMLParagraphElement>(null);
   const portfolio = credentialMonitoringPortfolio(state.records, "2026-10-20");
   const recoveryPreview = recoveryArchive ? previewComplianceRecovery(state, recoveryArchive) : null;
+  const refreshAssessmentSource = () => { try { setAssessmentSource(readAssessmentSources()); setMessage('Authoritative assessment sources refreshed; enrollment input preserved.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Assessment sources unavailable.'); } };
+  const enrollAssessment = () => {
+    try {
+      const next = repository.registerAssessment({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedModerationRevision: assessmentSource?.revision ?? -1, role, ...enrollment, enrolledBy: 'Compliance lead' });
+      setState(next); setMonitoringId('MON-' + enrollment.credentialId);
+      setMessage('Verified assessment learner enrolled with a durable credential identity and exact source references.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Credential enrollment failed.'); }
+  };
   const captureRecovery = () => { try { const archive = exportComplianceRecovery(state, { id: crypto.randomUUID(), monitoringId, role, createdOn: '2026-10-29' }); localStorage.setItem('skillorbit:compliance-recovery:v1', JSON.stringify(archive)); setRecoveryArchive(archive); setMessage('Monitoring compliance recovery archive captured; learner progress is separate.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery export failed.'); } queueMicrotask(() => feedback.current?.focus()); };
   const loadRecovery = async (file: File | undefined) => { if (!file) return; try { setRecoveryArchive(parseComplianceRecovery(await file.text())); setMessage('Compliance recovery archive loaded for review without changing learner progress.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery archive could not be loaded.'); } queueMicrotask(() => feedback.current?.focus()); };
   const applyRecovery = () => { if (!recoveryArchive) return; try { setState(repository.importRecovery(recoveryArchive, { id: crypto.randomUUID(), expectedRevision: state.revision, role, importedBy: 'Compliance lead', importedOn: '2026-10-29' })); setMessage('Verified compliance history imported; learner progress was preserved.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Recovery import failed.'); } queueMicrotask(() => feedback.current?.focus()); };
@@ -137,8 +152,10 @@ export function CredentialMonitoringControl() {
           <option>Compliance Lead</option>
         </select>
       </label>
+      {role === 'Compliance Lead' && <details><summary>Enroll a verified assessment learner</summary><p>Register a new monitored credential from an independently published assessment. Existing named monitoring records are not inferred matches.</p>{!assessmentSource && <p role="alert">Assessment source unavailable. Repair it in the moderation workflow, then refresh; existing monitoring remains intact.</p>}<label>Published assessment attempt<select value={enrollment.attemptId} onChange={(event) => { setEnrollment({ ...enrollment, attemptId: event.target.value }); }}>{assessmentSource?.attempts.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.learnerId} · {item.status}</option>)}</select></label><label>Enrollment credential ID<input value={enrollment.credentialId} onChange={(event) => { setEnrollment({ ...enrollment, credentialId: event.target.value }); }} /></label><label>Enrollment evidence<input value={enrollment.evidenceReference} onChange={(event) => { setEnrollment({ ...enrollment, evidenceReference: event.target.value }); }} /></label><label>Monitoring window starts<input type="date" value={enrollment.startsOn} onChange={(event) => { setEnrollment({ ...enrollment, startsOn: event.target.value }); }} /></label><label>Monitoring window ends<input type="date" value={enrollment.endsOn} onChange={(event) => { setEnrollment({ ...enrollment, endsOn: event.target.value }); }} /></label><button onClick={refreshAssessmentSource}>Refresh assessment sources</button><button onClick={enrollAssessment}>Enroll verified credential monitoring</button></details>}
       <label>Active monitoring record<select value={monitoringId} onChange={(event) => { setMonitoringId(event.target.value); setMessage(''); }}>{state.records.map((item) => <option key={item.monitoringId} value={item.monitoringId}>{item.monitoringId} · {item.learner}</option>)}</select></label>
       <p aria-label="Selected monitoring record">{selectedRecord?.learner} · {selectedRecord?.credential} · {monitoringId}</p>
+      {selectedRecord?.assessmentSource && <p aria-label="Authoritative assessment enrollment">Learner {selectedRecord.learnerId} · credential {selectedRecord.credentialId} · attempt {selectedRecord.assessmentSource.attemptId} v{selectedRecord.assessmentSource.attemptVersion} · assessment {selectedRecord.assessmentSource.assessmentId} · rules v{selectedRecord.assessmentSource.rulesVersion} · publication {selectedRecord.assessmentSource.publicationId}</p>}
       {!currentReview && <fieldset><legend>Assign due review</legend><label>Review supervisor<input value={assignedSupervisor} onChange={(event) => { setAssignedSupervisor(event.target.value); }} /></label><label>Due review date<input type="date" value={routineReviewOn} onChange={(event) => { setRoutineReviewOn(event.target.value); }} /></label><button disabled={role !== 'Compliance Lead' || state.closures.some((item) => item.monitoringId === monitoringId)} onClick={scheduleDue}>Assign due monitoring review</button></fieldset>}
       {portfolio.map((item) => (
         <p key={item.monitoringId}>
