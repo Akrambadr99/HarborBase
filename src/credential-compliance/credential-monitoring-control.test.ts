@@ -1,5 +1,9 @@
+import { createElement } from 'react'
+import { cleanup, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { CredentialMonitoringControl } from './CredentialMonitoringControl'
 import { describe, expect, it } from 'vitest'
-import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
+import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleDueMonitoringReview, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
 
 const command = { id: 'monitor-1', expectedRevision: 0, role: 'Compliance Lead' as const, monitoringId: 'MON-AR-18', owner: 'Senior compliance reviewer', reviewOn: '2026-10-21', asOf: '2026-10-20', evidenceRequested: 'Provide supervisor observation for both failed credential uses.' }
 it('reassigns an unavailable supervisor without losing learner evidence or previous notices', () => {
@@ -192,3 +196,71 @@ it('reviews on or after the actual submission while allowing review before its s
   expect(accepted.supervisorReviews.at(-1)).toMatchObject({ reviewedOn: '2026-10-25', reviewId: 'future-review' })
   expect(accepted.reviewHistory.at(-1)?.reviewOn).toBe('2026-11-01')
 });
+
+const routineCommand = { ...command, id: 'routine-JL', monitoringId: 'MON-JL-07', routineReview: true as const, supervisor: 'Safety supervisor', reviewOn: '2026-10-21', evidenceRequested: 'Provide rigging observation evidence before the current monitoring period ends.' }
+it('assigns an actual due record with scoped notices without mutating another learner', () => {
+  const state = scheduleDueMonitoringReview(initialMonitoringPortfolioState, routineCommand)
+  expect(state.records[0]).toEqual(initialMonitoringPortfolioState.records[0])
+  expect(state.reviewHistory[0]).toMatchObject({ monitoringId: 'MON-JL-07', learner: 'Jonas Lee', assignedSupervisor: 'Safety supervisor' })
+  expect(state.scheduledNotices.map((item) => [item.audience, item.recipient])).toEqual([['learner', 'Jonas Lee'], ['supervisor', 'Safety supervisor']])
+  expect(scheduleDueMonitoringReview(state, routineCommand)).toBe(state)
+  expect(() => scheduleDueMonitoringReview(state, { ...routineCommand, id: 'duplicate', expectedRevision: state.revision })).toThrow('unassigned due')
+})
+it('rejects unauthorized, not-due, invalid-date and stale routine assignment without partial notices', () => {
+  const before = structuredClone(initialMonitoringPortfolioState)
+  expect(() => scheduleDueMonitoringReview(before, { ...routineCommand, role: 'Supervisor' })).toThrow('compliance lead')
+  expect(() => scheduleDueMonitoringReview(before, { ...routineCommand, monitoringId: 'MON-SK-12' })).toThrow('unassigned due')
+  expect(() => scheduleDueMonitoringReview(before, { ...routineCommand, reviewOn: '2026-10-23' })).toThrow('monitoring period')
+  expect(() => scheduleDueMonitoringReview(before, { ...routineCommand, reviewOn: '2026-02-31' })).toThrow('monitoring period')
+  expect(() => scheduleDueMonitoringReview(before, { ...routineCommand, expectedRevision: 1 })).toThrow('Refresh')
+  expect(before).toEqual(initialMonitoringPortfolioState)
+})
+it('executes independent evidence decisions and current notices across two review records', () => {
+  let state = scheduleMonitoringReview(initialMonitoringPortfolioState, command)
+  state = scheduleDueMonitoringReview(state, { ...routineCommand, expectedRevision: state.revision })
+  state = submitMonitoringEvidence(state, { id: 'AR-evidence', expectedRevision: state.revision, role: 'Learner', monitoringId: 'MON-AR-18', learner: 'Amira Rahman', evidenceReference: 'AR-OBS', submittedOn: '2026-10-22' })
+  state = submitMonitoringEvidence(state, { id: 'JL-evidence', expectedRevision: state.revision, role: 'Learner', monitoringId: 'MON-JL-07', learner: 'Jonas Lee', evidenceReference: 'JL-OBS', submittedOn: '2026-10-22' })
+  const decision = { id: 'JL-decision', expectedRevision: state.revision, role: 'Supervisor' as const, monitoringId: 'MON-JL-07', submissionId: 'JL-evidence', decision: 'accepted' as const, rationale: 'Current rigging observations meet the review requirement.', reviewer: 'Safety supervisor', reviewedOn: '2026-10-23' }
+  expect(() => reviewMonitoringEvidence(state, { ...decision, submissionId: 'AR-evidence' })).toThrow('latest learner')
+  expect(() => reviewMonitoringEvidence(state, decision)).toThrow('acknowledge')
+  state = acknowledgeScheduledReview(state, { id: 'JL-ack', expectedRevision: state.revision, role: 'Supervisor', noticeId: 'routine-JL:supervisor', actor: 'Safety supervisor', acknowledgedOn: '2026-10-21' })
+  expect(() => reviewMonitoringEvidence(state, { ...decision, expectedRevision: state.revision, reviewer: 'Other supervisor' })).toThrow('assigned')
+  const accepted = reviewMonitoringEvidence(state, { ...decision, expectedRevision: state.revision })
+  expect(querySupervisorReviewQueue(accepted, '2026-10-23').map((item) => [item.monitoringId, item.status])).toEqual([['MON-AR-18', 'awaiting supervisor'], ['MON-JL-07', 'accepted']])
+  expect(accepted.learnerNotices[0]).toMatchObject({ learner: 'Jonas Lee', evidenceReference: 'JL-OBS' })
+  expect(queryMonitoringInterface(accepted, 'MON-AR-18', 'Learner')?.notices).toEqual([])
+})
+it('preserves record drafts and scopes learner evidence when switching executable monitoring work', async () => {
+  cleanup(); localStorage.clear()
+  const user = userEvent.setup()
+  render(createElement(CredentialMonitoringControl))
+  const selected = screen.getByRole('combobox', { name: 'Active monitoring record' })
+  await user.clear(screen.getByLabelText('Monitoring evidence reference'))
+  await user.type(screen.getByLabelText('Monitoring evidence reference'), 'AMIRA-DRAFT')
+  await user.selectOptions(selected, 'MON-JL-07')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Monitoring role' }), 'Compliance Lead')
+  await user.click(screen.getByRole('button', { name: 'Assign due monitoring review' }))
+  expect(screen.getByLabelText('Selected monitoring record')).toHaveTextContent('Jonas Lee')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Monitoring role' }), 'Learner')
+  await user.clear(screen.getByLabelText('Monitoring evidence reference'))
+  await user.type(screen.getByLabelText('Monitoring evidence reference'), 'JONAS-DRAFT')
+  await user.click(screen.getByRole('button', { name: 'Submit learner monitoring evidence' }))
+  expect(within(screen.getByRole('list', { name: 'Learner monitoring evidence' })).getByText(/JONAS-DRAFT/)).toBeVisible()
+  await user.selectOptions(selected, 'MON-AR-18')
+  expect(screen.getByLabelText('Monitoring evidence reference')).toHaveValue('AMIRA-DRAFT')
+  expect(screen.getByRole('list', { name: 'Learner monitoring evidence' })).not.toHaveTextContent('JONAS-DRAFT')
+  await user.selectOptions(selected, 'MON-JL-07')
+  expect(screen.getByLabelText('Monitoring evidence reference')).toHaveValue('JONAS-DRAFT')
+  cleanup(); localStorage.clear()
+})
+it('loads valid learner drafts and safely rejects malformed persisted input shapes', () => {
+  for (const saved of ['null', '[]', '{"MON-AR-18":{"evidence":42,"rationale":"bad"}}']) {
+    cleanup(); localStorage.clear(); localStorage.setItem('skillorbit:monitoring-work-input:v1', saved)
+    render(createElement(CredentialMonitoringControl))
+    expect(screen.getByLabelText('Monitoring evidence reference')).toHaveValue('SUPERVISOR-OBS-18')
+  }
+  cleanup(); localStorage.clear(); localStorage.setItem('skillorbit:monitoring-work-input:v1', JSON.stringify({ 'MON-AR-18': { evidence: 'VALID-SAVED', rationale: 'Preserved valid supervisor reasoning.' }, 'MON-JL-07': null }))
+  render(createElement(CredentialMonitoringControl))
+  expect(screen.getByLabelText('Monitoring evidence reference')).toHaveValue('VALID-SAVED')
+  cleanup(); localStorage.clear()
+})
