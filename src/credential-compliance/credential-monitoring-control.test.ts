@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CredentialMonitoringControl } from './CredentialMonitoringControl'
 import { describe, expect, it } from 'vitest'
-import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleDueMonitoringReview, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
+import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, exportComplianceRecovery, parseComplianceRecovery, previewComplianceRecovery, importComplianceRecovery, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, recordSupervisedMonitoringOutcome, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleDueMonitoringReview, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
 
 const command = { id: 'monitor-1', expectedRevision: 0, role: 'Compliance Lead' as const, monitoringId: 'MON-AR-18', owner: 'Senior compliance reviewer', reviewOn: '2026-10-21', asOf: '2026-10-20', evidenceRequested: 'Provide supervisor observation for both failed credential uses.' }
 it('reassigns an unavailable supervisor without losing learner evidence or previous notices', () => {
@@ -263,4 +263,81 @@ it('loads valid learner drafts and safely rejects malformed persisted input shap
   render(createElement(CredentialMonitoringControl))
   expect(screen.getByLabelText('Monitoring evidence reference')).toHaveValue('VALID-SAVED')
   cleanup(); localStorage.clear()
+})
+
+function observedCycle() {
+  let state = scheduleMonitoringReview(initialMonitoringPortfolioState, command)
+  state = submitMonitoringEvidence(state, { id: 'observed-submission', expectedRevision: state.revision, role: 'Learner', monitoringId: command.monitoringId, learner: 'Amira Rahman', evidenceReference: 'OBS-REAL-18', submittedOn: '2026-10-22' })
+  return reviewMonitoringEvidence(state, { id: 'observed-decision', expectedRevision: state.revision, role: 'Supervisor', monitoringId: command.monitoringId, submissionId: 'observed-submission', decision: 'accepted', rationale: 'Actual observations have been independently reviewed.', reviewer: 'Monitoring supervisor', reviewedOn: '2026-10-23' })
+}
+const observedCommand = { id: 'actual-outcome', expectedRevision: 3, role: 'Supervisor' as const, monitoringId: 'MON-AR-18', supervisedOutcome: true as const, successfulUses: 7, evidenceReference: 'USE-LOG-18', rationale: 'Seven current supervised uses satisfy the review requirements.', recordedBy: 'Monitoring supervisor', recordedOn: '2026-10-25' }
+it('pins real supervised outcomes into independent closure without altering original accepted evidence', () => {
+  const reviewed = observedCycle()
+  const observed = recordSupervisedMonitoringOutcome(reviewed, observedCommand)
+  const closing = { id: 'lead-closure', expectedRevision: observed.revision, role: 'Compliance Lead' as const, monitoringId: command.monitoringId, acceptedEvidence: ['OBS-REAL-18'], supervisorApproval: 'actual-outcome', complianceApproval: 'lead-closure', successfulUses: 7, closedBy: 'Compliance lead', closedOn: '2026-10-26' }
+  expect(() => closeCredentialMonitoring(observed, { ...closing, successfulUses: 8 })).toThrow('exact use count')
+  expect(() => closeCredentialMonitoring(observed, { ...closing, closedBy: 'Monitoring supervisor' })).toThrow('independent')
+  expect(() => closeCredentialMonitoring(observed, { ...closing, complianceApproval: 'COMP-APP-18' })).toThrow('attributable')
+  const closed = closeCredentialMonitoring(observed, closing)
+  expect(closed.records[0]?.successfulUses).toBe(7)
+  expect(closed.closures[0]).toMatchObject({ supervisorApproval: 'actual-outcome', complianceApproval: 'lead-closure', successfulUses: 7, immutable: true })
+  expect(closed.evidenceSubmissions).toEqual(reviewed.evidenceSubmissions)
+  expect(closed.supervisorReviews).toEqual(reviewed.supervisorReviews)
+  expect(closed.records[1]).toEqual(reviewed.records[1])
+})
+it('rejects incorrect supervisor, invalid outcome counts and stale chronology without mutation', () => {
+  const state = observedCycle(), before = structuredClone(state)
+  expect(() => recordSupervisedMonitoringOutcome(state, { ...observedCommand, role: 'Compliance Lead' })).toThrow('supervisor')
+  expect(() => recordSupervisedMonitoringOutcome(state, { ...observedCommand, recordedBy: 'Another supervisor' })).toThrow('attribution')
+  for (const successfulUses of [2, -1, 7.5, NaN]) expect(() => recordSupervisedMonitoringOutcome(state, { ...observedCommand, successfulUses })).toThrow('Observed use count')
+  for (const recordedOn of ['2026-02-30', '2026-10-22']) expect(() => recordSupervisedMonitoringOutcome(state, { ...observedCommand, recordedOn })).toThrow('valid date')
+  expect(() => recordSupervisedMonitoringOutcome(state, { ...observedCommand, expectedRevision: 0 })).toThrow('Refresh')
+  expect(state).toEqual(before)
+})
+it('requires new-cycle observed outcomes after rescheduling and preserves prior observation history', () => {
+  const observed = recordSupervisedMonitoringOutcome(observedCycle(), observedCommand)
+  const rescheduled = rescheduleMonitoringReview(observed, { id: 'next-cycle', expectedRevision: observed.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, reviewOn: '2026-10-26', asOf: '2026-10-25', reason: 'Current observation needs an additional independent review cycle.' })
+  expect(() => closeCredentialMonitoring(rescheduled, { id: 'old-outcome-close', expectedRevision: rescheduled.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, acceptedEvidence: ['OBS-REAL-18'], supervisorApproval: 'actual-outcome', complianceApproval: 'old-outcome-close', successfulUses: 7, closedBy: 'Compliance lead', closedOn: '2026-10-26' })).toThrow('Current learner evidence')
+  expect(rescheduled.supervisedOutcomes).toEqual(observed.supervisedOutcomes)
+  const stored = { getItem: () => JSON.stringify({ ...observedCycle(), supervisedOutcomes: undefined }), setItem: () => undefined }
+  expect(new BrowserMonitoringPersistence(stored).load()?.supervisedOutcomes).toEqual([])
+})
+it('executes supervised outcome entry and independently closes with its observed count in the UI', async () => {
+  localStorage.clear(); cleanup(); const user = userEvent.setup(); render(createElement(CredentialMonitoringControl))
+  await user.selectOptions(screen.getByLabelText('Monitoring role'), 'Compliance Lead')
+  await user.click(screen.getByRole('button', { name: 'Schedule high-risk monitoring review' }))
+  await user.selectOptions(screen.getByLabelText('Monitoring role'), 'Learner')
+  await user.click(screen.getByRole('button', { name: 'Submit learner monitoring evidence' }))
+  await user.selectOptions(screen.getByLabelText('Monitoring role'), 'Supervisor')
+  await user.click(screen.getByRole('button', { name: 'Accept monitoring evidence' }))
+  await user.clear(screen.getByLabelText('Observed successful uses')); await user.type(screen.getByLabelText('Observed successful uses'), '7')
+  await user.type(screen.getByLabelText('Observed outcome evidence'), 'USE-LOG-18')
+  await user.click(screen.getByRole('button', { name: 'Record supervised credential outcome' }))
+  expect(screen.getByRole('list', { name: 'Observed outcome history' })).toHaveTextContent('7 successful uses')
+  await user.selectOptions(screen.getByLabelText('Monitoring role'), 'Compliance Lead')
+  await user.click(screen.getByRole('button', { name: 'Complete governed credential monitoring' }))
+  expect(screen.getByRole('list', { name: 'Monitoring closure history' })).toHaveTextContent('successful uses 7')
+  const saved = new BrowserMonitoringPersistence(localStorage).load()
+  expect(saved?.closures[0]?.supervisorApproval).toBe(saved?.supervisedOutcomes[0]?.id)
+  expect(saved?.closures[0]?.complianceApproval).toBe(saved?.closures[0]?.id)
+  cleanup(); localStorage.clear()
+})
+
+it('loads an older schema-v1 recovery archive without outcome history through parse preview and import', () => {
+  const state = observedCycle(), exported = exportComplianceRecovery(state, { id: 'old-archive', monitoringId: command.monitoringId, role: 'Compliance Lead', createdOn: '2026-10-26' })
+  const legacy = parseComplianceRecovery(JSON.stringify({ ...exported, history: { ...exported.history, supervisedOutcomes: undefined } }))
+  expect(legacy.history.supervisedOutcomes).toEqual([])
+  expect(previewComplianceRecovery(state, legacy).ready).toBe(true)
+  const imported = importComplianceRecovery(state, legacy, { id: 'legacy-import', expectedRevision: state.revision, role: 'Compliance Lead', importedBy: 'Compliance lead', importedOn: '2026-10-26' })
+  expect(imported.supervisedOutcomes).toEqual([])
+  expect(imported.evidenceSubmissions).toEqual(state.evidenceSubmissions)
+  expect(imported.recoveryImports[0]?.archiveId).toBe('old-archive')
+})
+it('rejects malformed persisted outcome counts and altered review attribution at closure', () => {
+  const observed = recordSupervisedMonitoringOutcome(observedCycle(), observedCommand)
+  for (const amendment of [{ successfulUses: -1 }, { successfulUses: 7.5 }, { recordedBy: 'Other supervisor' }]) {
+    const changed = structuredClone(observed); Object.assign(changed.supervisedOutcomes[0]!, amendment)
+    expect(() => closeCredentialMonitoring(changed, { id: 'forged-close', expectedRevision: changed.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, acceptedEvidence: ['OBS-REAL-18'], supervisorApproval: 'actual-outcome', complianceApproval: 'forged-close', successfulUses: 7, closedBy: 'Compliance lead', closedOn: '2026-10-26' })).toThrow('Saved supervised outcome')
+    expect(changed.closures).toEqual([])
+  }
 })

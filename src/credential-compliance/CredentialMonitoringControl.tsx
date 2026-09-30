@@ -87,20 +87,27 @@ export function CredentialMonitoringControl() {
   const revalidateEvidence = (decision: "accepted" | "returned") => { try { if (!latestSubmission) throw new Error('Retained learner evidence is unavailable.'); setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId, submissionId: latestSubmission.id, carryForwardReview: true, decision, rationale: reviewRationale, reviewer: currentReview?.assignedSupervisor ?? 'Monitoring supervisor', reviewedOn: currentReview?.reviewOn ?? '2026-10-25' })); setMessage(decision === 'accepted' ? 'Retained evidence revalidated for the current cycle; the original supervisor decision remains historical.' : 'Retained evidence returned for current-cycle correction; original acceptance and learner work remain historical.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Evidence revalidation failed.'); } queueMicrotask(() => feedback.current?.focus()); };
   const submitEvidence = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId, learner: selectedRecord?.learner ?? "", evidenceReference, submittedOn: ["2026-10-22", currentReview?.reviewOn ?? "", latestDecision?.reviewedOn ?? ""].sort().at(-1) ?? "2026-10-22" })); setMessage("Learner monitoring evidence submitted for the active review."); } catch (error) { setMessage(error instanceof Error ? error.message : "Evidence submission failed."); } queueMicrotask(() => feedback.current?.focus()); };
   const reviewEvidence = (decision: "accepted" | "returned") => { try { if (!latestSubmission) throw new Error("No learner evidence is awaiting review."); setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId, submissionId: latestSubmission.id, decision, rationale: reviewRationale, reviewer: currentReview?.assignedSupervisor ?? "Monitoring supervisor", reviewedOn: ["2026-10-23", latestSubmission.submittedOn].sort().at(-1) ?? "2026-10-23" })); setMessage(`Supervisor ${decision} learner evidence.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Supervisor review failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const [outcomeInputs, setOutcomeInputs] = useState<Record<string, { uses: string; reference: string; rationale: string }>>({});
+  const outcomeInput = outcomeInputs[monitoringId] ?? { uses: '5', reference: '', rationale: 'Observed supervised uses satisfy the credential monitoring requirements.' };
+  const observedUses = outcomeInput.uses, outcomeReference = outcomeInput.reference, outcomeRationale = outcomeInput.rationale;
+  const updateOutcomeInput = (field: 'uses' | 'reference' | 'rationale', value: string) => { setOutcomeInputs((current) => ({ ...current, [monitoringId]: { ...outcomeInput, ...current[monitoringId], [field]: value } })); };
+  const currentOutcome = state.supervisedOutcomes.filter((item) => item.monitoringId === monitoringId).at(-1);
+  const recordOutcome = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, monitoringId, supervisedOutcome: true, successfulUses: Number(observedUses), evidenceReference: outcomeReference, rationale: outcomeRationale, recordedBy: currentReview?.assignedSupervisor ?? latestDecision?.reviewer ?? '', recordedOn: [latestDecision?.reviewedOn ?? '', currentOutcome?.recordedOn ?? '', selectedRecord?.endsOn ?? ''].sort().at(-1) ?? '2026-10-26' })); setMessage('Observed credential outcomes recorded with their exact supervisor review; independent compliance closure remains required.'); } catch(error) { setMessage(error instanceof Error ? error.message : 'Supervised outcome failed.'); } };
   const close = () => {
     try {
+      const decisionId = crypto.randomUUID();
       setState(
         repository.dispatch({
-          id: crypto.randomUUID(),
+          id: decisionId,
           expectedRevision: state.revision,
           role,
           monitoringId,
           acceptedEvidence: [latestSubmission?.evidenceReference ?? "SUPERVISOR-OBS-18"],
-          supervisorApproval: "SUP-APP-18",
-          complianceApproval: "COMP-APP-18",
-          successfulUses: 5,
+          supervisorApproval: currentOutcome?.id ?? latestDecision?.id ?? "SUP-APP-18",
+          complianceApproval: decisionId,
+          successfulUses: currentOutcome?.successfulUses ?? 5,
           closedBy: "Compliance lead",
-          closedOn: ["2026-10-26", selectedRecord?.endsOn ?? ""].sort().at(-1) ?? "2026-10-26",
+          closedOn: ["2026-10-26", selectedRecord?.endsOn ?? "", currentOutcome?.recordedOn ?? ""].sort().at(-1) ?? "2026-10-26",
         }),
       );
       setMessage(
@@ -160,6 +167,7 @@ export function CredentialMonitoringControl() {
       {carriedEvidenceNeedsReview && <section aria-label="Retained evidence revalidation"><h3>Evidence carried into a new review cycle</h3><p>The original acceptance remains historical. Current-cycle supervisor confirmation is required for {latestSubmission?.evidenceReference}.</p><button disabled={role !== 'Supervisor' || Boolean(currentDueDecision)} onClick={() => { revalidateEvidence("accepted"); }}>Revalidate retained evidence</button><button disabled={role !== 'Supervisor' || Boolean(currentDueDecision)} onClick={() => { revalidateEvidence("returned"); }}>Return retained evidence</button></section>}
       <button disabled={role !== "Supervisor" || !latestSubmission || Boolean(latestDecision)} onClick={() => { reviewEvidence("accepted"); }}>Accept monitoring evidence</button>
       <button disabled={role !== "Supervisor" || !latestSubmission || Boolean(latestDecision)} onClick={() => { reviewEvidence("returned"); }}>Return monitoring evidence</button>
+      {currentReview && role !== 'Learner' && <section aria-label="Supervised credential outcomes"><h3>Observed credential outcomes</h3><p>Record actual supervised use evidence before independent closure. Legacy closure history remains available.</p><label>Observed successful uses<input type="number" min="0" step="1" value={observedUses} onChange={(event) => { updateOutcomeInput('uses', event.target.value); }} /></label><label>Observed outcome evidence<input value={outcomeReference} onChange={(event) => { updateOutcomeInput('reference', event.target.value); }} /></label><label>Observed outcome rationale<textarea value={outcomeRationale} onChange={(event) => { updateOutcomeInput('rationale', event.target.value); }} /></label><button disabled={role !== 'Supervisor' || latestDecision?.decision !== 'accepted' || state.closures.some((item) => item.monitoringId === monitoringId)} onClick={recordOutcome}>Record supervised credential outcome</button><ol aria-label="Observed outcome history">{state.supervisedOutcomes.filter((item) => item.monitoringId === monitoringId).map((item) => <li key={item.id}>{item.successfulUses} successful uses · {item.evidenceReference} · reviewer {item.recordedBy} · cycle {item.reviewId} · {item.recordedOn}</li>)}</ol></section>}
       <button
         disabled={
           role !== "Compliance Lead" ||

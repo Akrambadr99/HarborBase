@@ -229,3 +229,17 @@ test('executes independent learner review workload with scoped notices and retai
   await record.selectOption('MON-JL-07');
   await expect(page.getByRole('list', { name: 'Due review decision history' })).toContainText('completed');
 });
+
+test('actual supervised credential outcomes govern independent monitoring closure', async ({ page }) => {
+  await page.goto('/credential-compliance'); const role = page.getByRole('combobox', { name: 'Monitoring role', exact: true });
+  await role.selectOption('Compliance Lead'); await page.getByRole('button', { name: 'Schedule high-risk monitoring review' }).click();
+  await role.selectOption('Learner'); await page.getByRole('button', { name: 'Submit learner monitoring evidence' }).click();
+  await role.selectOption('Supervisor'); await page.getByRole('button', { name: 'Accept monitoring evidence' }).click();
+  await page.getByRole('spinbutton', { name: 'Observed successful uses', exact: true }).fill('7');
+  await page.getByRole('textbox', { name: 'Observed outcome evidence', exact: true }).fill('SUPERVISED-LOG-7');
+  await page.getByRole('button', { name: 'Record supervised credential outcome' }).click();
+  await expect(page.getByRole('list', { name: 'Observed outcome history' })).toContainText('7 successful uses');
+  await role.selectOption('Compliance Lead'); await page.getByRole('button', { name: 'Complete governed credential monitoring' }).click();
+  await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 7');
+  await page.reload(); await expect(page.getByRole('list', { name: 'Monitoring closure history' })).toContainText('successful uses 7');
+});
