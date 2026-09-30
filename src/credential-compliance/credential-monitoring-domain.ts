@@ -30,7 +30,9 @@ export function exportComplianceRecovery(state: MonitoringPortfolioState, comman
   return { schemaVersion: 1, id: command.id, monitoringId: record.monitoringId, learner: record.learner, credential: record.credential, sourceRevision: state.revision, createdOn: command.createdOn, progressAtCapture: { successfulUses: record.successfulUses, failedUses: record.failedUses, evidencePending: record.evidencePending }, history }
 }
 export function parseComplianceRecovery(raw: string): ComplianceRecoveryArchive {
-  const archive = JSON.parse(raw) as unknown as Partial<ComplianceRecoveryArchive>
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object') throw new Error('Monitoring recovery archive is structurally incomplete.')
+  const archive = parsed as Partial<ComplianceRecoveryArchive>
   if (archive.schemaVersion !== 1) throw new Error('Unsupported monitoring recovery archive schema.')
   if (!archive.id || !archive.monitoringId || !archive.learner || !archive.history || complianceHistoryKeys.some((key) => !Array.isArray(archive.history?.[key]))) throw new Error('Monitoring recovery archive is structurally incomplete.')
   return archive as ComplianceRecoveryArchive
@@ -46,6 +48,13 @@ export function previewComplianceRecovery(state: MonitoringPortfolioState, archi
   if (complianceHistoryKeys.some((key) => key !== 'noticeAcknowledgements' && archive.history[key].some((item) => item.monitoringId !== archive.monitoringId))) reasons.push('Archive contains history for a different learner monitoring record.')
   if (archive.history.evidenceSubmissions.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.scheduledNotices.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.noticeAcknowledgements.some((item) => !archive.history.scheduledNotices.some((notice) => notice.id === item.noticeId && notice.reviewId === item.reviewId))) reasons.push('Review-cycle or notice lineage is incomplete.')
   if (archive.history.supervisorReviews.some((item) => !archive.history.evidenceSubmissions.some((submission) => submission.id === item.submissionId)) || archive.history.dueReviewDecisions.some((item) => !reviews.some((review) => review.id === item.reviewId)) || archive.history.supervisorExceptions.some((item) => !reviews.some((review) => review.id === item.reviewId) || !reviews.some((review) => review.id === item.nextReviewId))) reasons.push('Evidence decision or supervisor assignment references a missing review.')
+  if ([...reviews, ...archive.history.evidenceSubmissions, ...archive.history.learnerNotices, ...archive.history.closures].some((item) => item.learner !== archive.learner)) reasons.push('Archived evidence names a different learner from its monitoring source.')
+  if (archive.history.learnerNotices.some((notice) => !archive.history.supervisorReviews.some((review) => review.id === notice.reviewId && review.submissionId === notice.submissionId && review.decision === notice.decision) || !archive.history.evidenceSubmissions.some((submission) => submission.id === notice.submissionId && submission.evidenceReference === notice.evidenceReference))) reasons.push('Learner decision notice does not match its reviewed evidence and outcome.')
+  if (archive.history.noticeAcknowledgements.some((acknowledgement) => {
+    const notice = archive.history.scheduledNotices.find((item) => item.id === acknowledgement.noticeId)
+    const review = reviews.find((item) => item.id === notice?.reviewId)
+    return notice && (acknowledgement.acknowledgedOn < notice.issuedOn || (notice.audience === 'learner' ? acknowledgement.actor !== notice.recipient : Boolean(review?.assignedSupervisor && acknowledgement.actor !== review.assignedSupervisor)))
+  })) reasons.push('Review acknowledgement must preserve the authorized recipient and notice date.')
   if (archive.history.closures.some((item) => !reviews.some((review) => review.id === item.reviewId))) reasons.push('Monitoring closure has no archived review source.')
   for (const key of complianceHistoryKeys) for (const item of archive.history[key]) { const existing = state[key].find((entry) => entry.id === item.id); if (existing && JSON.stringify(existing) !== JSON.stringify(item)) reasons.push(`Existing ${key} record ${item.id} conflicts with archive evidence.`) }
   return { ready: reasons.length === 0, reasons, archiveId: archive.id, sourceRevision: archive.sourceRevision, currentRevision: state.revision }

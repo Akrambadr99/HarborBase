@@ -34,3 +34,30 @@ it('rejects stale and invalid learner-review archives without partial writes and
   delete old['recoveryImports']
   expect(new BrowserMonitoringPersistence({ getItem: () => JSON.stringify(old), setItem: () => undefined }).load()?.recoveryImports).toEqual([])
 })
+
+it('preserves learner and recipient identity across restored review evidence', () => {
+  const state = structuredClone(initialMonitoringPortfolioState)
+  const archive = exportComplianceRecovery(state, command)
+  archive.history.reviewHistory.push({ id: 'review', monitoringId: command.monitoringId, learner: archive.learner, previousOwner: 'Credential council', owner: 'Compliance lead', reviewOn: '2026-10-30', failedUses: 2, evidenceRequested: 'Verify observed learner uses.', decisionDue: true, immutable: true })
+  archive.history.scheduledNotices.push({ id: 'notice', monitoringId: command.monitoringId, reviewId: 'review', audience: 'learner', recipient: archive.learner, dueOn: '2026-10-30', message: 'Review due', issuedOn: '2026-10-29', immutable: true })
+  archive.history.noticeAcknowledgements.push({ id: 'ack', noticeId: 'notice', reviewId: 'review', actor: archive.learner, acknowledgedOn: '2026-10-29', immutable: true })
+  const restore = { id: 'restore-identities', expectedRevision: 0, role: 'Compliance Lead' as const, importedBy: 'lead', importedOn: '2026-10-29' }
+  const before = structuredClone(state)
+  const wrongLearner = structuredClone(archive)
+  wrongLearner.history.reviewHistory[0]!.learner = 'Another learner'
+  expect(() => importComplianceRecovery(state, wrongLearner, restore)).toThrow('different learner')
+  for (const change of [{ actor: 'Another recipient' }, { acknowledgedOn: '2026-10-28' }]) {
+    const invalid = structuredClone(archive)
+    Object.assign(invalid.history.noticeAcknowledgements[0]!, change)
+    expect(() => importComplianceRecovery(state, invalid, restore)).toThrow('authorized recipient and notice date')
+  }
+  expect(state).toEqual(before)
+  expect(importComplianceRecovery(state, archive, restore).noticeAcknowledgements).toEqual(archive.history.noticeAcknowledgements)
+  expect(() => parseComplianceRecovery('null')).toThrow('structurally incomplete')
+  archive.history.evidenceSubmissions.push({ id: 'submission', monitoringId: command.monitoringId, learner: archive.learner, reviewId: 'review', evidenceReference: 'OBSERVATION-1', submittedOn: '2026-10-29', sourceRevision: 0, immutable: true })
+  archive.history.supervisorReviews.push({ id: 'decision', monitoringId: command.monitoringId, submissionId: 'submission', reviewId: 'review', decision: 'accepted', rationale: 'Observed uses meet the criteria.', reviewer: 'supervisor', reviewedOn: '2026-10-29', sourceRevision: 0, immutable: true })
+  archive.history.learnerNotices.push({ id: 'decision-notice', monitoringId: command.monitoringId, learner: archive.learner, submissionId: 'submission', reviewId: 'decision', decision: 'returned', evidenceReference: 'OBSERVATION-1', rationale: 'Observed uses meet the criteria.', issuedOn: '2026-10-29', immutable: true })
+  expect(() => importComplianceRecovery(state, archive, restore)).toThrow('reviewed evidence and outcome')
+  archive.history.learnerNotices[0]!.decision = 'accepted'
+  expect(importComplianceRecovery(state, archive, restore).learnerNotices).toEqual(archive.history.learnerNotices)
+})
