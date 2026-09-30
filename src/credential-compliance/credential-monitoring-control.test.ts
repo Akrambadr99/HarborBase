@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, reassignUnavailableSupervisor, rescheduleMonitoringReview, reviewMonitoringEvidence, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
+import { acknowledgeScheduledReview, BrowserMonitoringPersistence, closeCredentialMonitoring, decideDueMonitoringReview, initialMonitoringPortfolioState, MonitoringPortfolioRepository, MonitoringReadAdapter, monitoringCapabilities, queryLearnerMonitoringHistory, queryMonitoringInterface, querySupervisorReviewQueue, reassignUnavailableSupervisor, rescheduleMonitoringReview, revalidateCarriedMonitoringEvidence, reviewMonitoringEvidence, scheduleMonitoringReview, submitMonitoringEvidence, type MonitoringPersistence, type MonitoringPortfolioState } from './credential-monitoring-domain'
 
 const command = { id: 'monitor-1', expectedRevision: 0, role: 'Compliance Lead' as const, monitoringId: 'MON-AR-18', owner: 'Senior compliance reviewer', reviewOn: '2026-10-21', asOf: '2026-10-20', evidenceRequested: 'Provide supervisor observation for both failed credential uses.' }
 it('reassigns an unavailable supervisor without losing learner evidence or previous notices', () => {
@@ -120,3 +120,75 @@ it('completes reassigned supervisor evidence only after current notices, resubmi
   expect(closed.closures[0]).toMatchObject({reviewId:'supervisor-change:review',acceptedEvidence:['OBS-19']})
   expect(closed.supervisorExceptions).toEqual(s.supervisorExceptions)
 })
+
+describe('retained evidence across a rescheduled review', () => {
+  function carried() {
+    let state = scheduleMonitoringReview(initialMonitoringPortfolioState, command)
+    state = submitMonitoringEvidence(state, { id: 'retained-evidence', expectedRevision: state.revision, role: 'Learner', monitoringId: command.monitoringId, learner: 'Amira Rahman', evidenceReference: 'OBS-CARRIED', submittedOn: '2026-10-22' })
+    state = reviewMonitoringEvidence(state, { id: 'original-acceptance', expectedRevision: state.revision, role: 'Supervisor', monitoringId: command.monitoringId, submissionId: 'retained-evidence', decision: 'accepted', rationale: 'Both observation records are supported.', reviewer: 'Monitoring supervisor', reviewedOn: '2026-10-23' })
+    return rescheduleMonitoringReview(state, { id: 'new-cycle', expectedRevision: state.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, reviewOn: '2026-10-25', asOf: '2026-10-24', reason: 'Learner availability moved the governed completion review.' })
+  }
+  function acknowledge(state: MonitoringPortfolioState) {
+    for (const audience of ['learner', 'supervisor'] as const) state = acknowledgeScheduledReview(state, { id: `current-${audience}`, expectedRevision: state.revision, role: audience === 'learner' ? 'Learner' : 'Supervisor', noticeId: `new-cycle:${audience}`, actor: audience === 'learner' ? 'Amira Rahman' : 'Monitoring supervisor', acknowledgedOn: '2026-10-24' })
+    return state
+  }
+  const decision = { id: 'carried-completion', expectedRevision: 0, role: 'Compliance Lead' as const, monitoringId: command.monitoringId, outcome: 'completed' as const, reason: 'Retained observations were independently revalidated for the current cycle.', nextReviewOn: null, decidedBy: 'Compliance lead', decidedOn: '2026-10-25' }
+  const revalidation = { id: 'revalidated', expectedRevision: 0, role: 'Supervisor' as const, monitoringId: command.monitoringId, submissionId: 'retained-evidence', carryForwardReview: true as const, decision: 'accepted' as const, rationale: 'Observations remain current and satisfy this rescheduled evidence request.', reviewer: 'Monitoring supervisor', reviewedOn: '2026-10-25' }
+  it('cannot complete a new cycle using an old accepted decision even with fresh notices', () => {
+    const state = acknowledge(carried())
+    const before = structuredClone(state)
+    expect(() => decideDueMonitoringReview(state, { ...decision, expectedRevision: state.revision })).toThrow('accepted evidence')
+    expect(querySupervisorReviewQueue(state, '2026-10-25')[0]?.status).toBe('awaiting supervisor')
+    expect(state).toEqual(before)
+  })
+  it('revalidates without copying learner work or replacing its original acceptance', () => {
+    const state = acknowledge(carried())
+    const original = structuredClone(state.supervisorReviews)
+    const validated = revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: state.revision })
+    expect(validated.evidenceSubmissions).toEqual(state.evidenceSubmissions)
+    expect(validated.supervisorReviews.slice(0, -1)).toEqual(original)
+    expect(validated.supervisorReviews.at(-1)).toMatchObject({ reviewId: 'new-cycle', submissionId: 'retained-evidence', revalidatedFromDecisionId: 'original-acceptance', immutable: true })
+    const complete = decideDueMonitoringReview(validated, { ...decision, expectedRevision: validated.revision })
+    expect(complete.dueReviewDecisions.at(-1)).toMatchObject({ reviewId: 'new-cycle', supervisorReviewId: 'revalidated', evidenceSubmissionId: 'retained-evidence' })
+    expect(querySupervisorReviewQueue(validated, '2026-10-25')[0]?.status).toBe('accepted')
+    expect(revalidateCarriedMonitoringEvidence(validated, { ...revalidation, expectedRevision: state.revision })).toBe(validated)
+  })
+  it('returns carried evidence for correction without erasing prior acceptance or learner work', () => {
+    const state = acknowledge(carried())
+    const returned = revalidateCarriedMonitoringEvidence(state, { ...revalidation, id: 'returned-carried', expectedRevision: state.revision, decision: 'returned', rationale: 'Retained observation no longer covers the revised evidence request.' })
+    expect(returned.supervisorReviews[0]).toEqual(state.supervisorReviews[0])
+    expect(returned.learnerNotices.at(-1)).toMatchObject({ decision: 'returned', evidenceReference: 'OBS-CARRIED' })
+    expect(querySupervisorReviewQueue(returned, '2026-10-25')[0]?.status).toBe('awaiting correction')
+    for (const role of ['Learner', 'Compliance Lead'] as const) expect(queryMonitoringInterface(returned, command.monitoringId, role)?.submittedEvidence).toEqual([{ evidenceReference: 'OBS-CARRIED', submittedOn: '2026-10-22', supervisorDecision: 'returned' }])
+    expect(() => decideDueMonitoringReview(returned, { ...decision, expectedRevision: returned.revision })).toThrow('accepted evidence')
+    const corrected = submitMonitoringEvidence(returned, { id: 'corrected-carried', expectedRevision: returned.revision, role: 'Learner', monitoringId: command.monitoringId, learner: 'Amira Rahman', evidenceReference: 'OBS-CURRENT', submittedOn: '2026-10-25' })
+    expect(corrected.evidenceSubmissions).toHaveLength(2)
+    expect(corrected.evidenceSubmissions.at(-1)).toMatchObject({ supersedesSubmissionId: 'retained-evidence', reviewId: 'new-cycle' })
+    const accepted = reviewMonitoringEvidence(corrected, { id: 'current-corrected-review', expectedRevision: corrected.revision, role: 'Supervisor', monitoringId: command.monitoringId, submissionId: 'corrected-carried', decision: 'accepted', rationale: 'Revised evidence now covers the current request.', reviewer: 'Monitoring supervisor', reviewedOn: '2026-10-25' })
+    expect(decideDueMonitoringReview(accepted, { ...decision, expectedRevision: accepted.revision }).dueReviewDecisions.at(-1)?.evidenceSubmissionId).toBe('corrected-carried')
+  })
+  it('rejects unacknowledged, wrong-actor, stale and repeated revalidation without partial changes', () => {
+    const waiting = carried()
+    expect(() => revalidateCarriedMonitoringEvidence(waiting, { ...revalidation, expectedRevision: waiting.revision })).toThrow('acknowledge this cycle')
+    const state = acknowledge(waiting)
+    expect(() => revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: state.revision, role: 'Learner' })).toThrow('current supervisor')
+    expect(() => revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: state.revision, reviewer: 'Other supervisor' })).toThrow('current supervisor')
+    expect(() => revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: 0 })).toThrow('Refresh')
+    expect(() => revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: state.revision, reviewedOn: '2026-02-30' })).toThrow('valid date')
+    const validated = revalidateCarriedMonitoringEvidence(state, { ...revalidation, expectedRevision: state.revision })
+    expect(() => revalidateCarriedMonitoringEvidence(validated, { ...revalidation, id: 'again', expectedRevision: validated.revision })).toThrow('active different review cycle')
+    expect(state.supervisorReviews).toHaveLength(1)
+  })
+})
+it('reviews on or after the actual submission while allowing review before its scheduled due date', () => {
+  let state = scheduleMonitoringReview(initialMonitoringPortfolioState, command)
+  state = rescheduleMonitoringReview(state, { id: 'future-review', expectedRevision: state.revision, role: 'Compliance Lead', monitoringId: command.monitoringId, reviewOn: '2026-11-01', asOf: '2026-10-24', reason: 'The learner review meeting moved into the next business week.' })
+  state = submitMonitoringEvidence(state, { id: 'early-current-evidence', expectedRevision: state.revision, role: 'Learner', monitoringId: command.monitoringId, learner: 'Amira Rahman', evidenceReference: 'EARLY-OBS', submittedOn: '2026-10-25' })
+  const review = { id: 'early-current-review', expectedRevision: state.revision, role: 'Supervisor' as const, monitoringId: command.monitoringId, submissionId: 'early-current-evidence', decision: 'accepted' as const, rationale: 'Evidence was checked before the planned learner meeting.', reviewer: 'Monitoring supervisor', reviewedOn: '2026-10-25' }
+  const before = structuredClone(state)
+  for (const reviewedOn of ['2026-10-23', '2026-02-30', 'not-a-date']) expect(() => reviewMonitoringEvidence(state, { ...review, reviewedOn })).toThrow('actual learner submission')
+  expect(state).toEqual(before)
+  const accepted = reviewMonitoringEvidence(state, review)
+  expect(accepted.supervisorReviews.at(-1)).toMatchObject({ reviewedOn: '2026-10-25', reviewId: 'future-review' })
+  expect(accepted.reviewHistory.at(-1)?.reviewOn).toBe('2026-11-01')
+});
